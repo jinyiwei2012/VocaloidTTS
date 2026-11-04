@@ -1,0 +1,791 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f3f7f4">
+<title>VocaloidTTS 1.1 · 基于 Vocaloid 的自动语调教</title>
+<style>
+:root{
+  --paper:#f3f7f4;
+  --paper-2:#e9f2ed;
+  --ink:#081b18;
+  --ink-soft:#173a34;
+  --muted:#5b706a;
+  --line:rgba(8,27,24,.13);
+  --line-strong:rgba(8,27,24,.24);
+  --mint:#0eae93;
+  --mint-deep:#087f6c;
+  --mint-pale:#d8f5ec;
+  --lime:#b7f34a;
+  --coral:#ff7a59;
+  --blue:#3b6df6;
+  --white:#fff;
+  --mono:"Cascadia Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace;
+  --sans:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI","PingFang SC","Noto Sans SC",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;max-width:100%;overflow-x:hidden}
+body{
+  background:
+    radial-gradient(1100px 620px at 88% -8%, rgba(14,174,147,.15), transparent 60%),
+    radial-gradient(900px 600px at -8% 108%, rgba(59,109,246,.08), transparent 62%),
+    var(--paper);
+  color:var(--ink);
+  font-family:var(--sans);
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+body::before{
+  content:"";
+  position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(rgba(8,27,24,.045) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(8,27,24,.045) 1px,transparent 1px);
+  background-size:56px 56px;
+  mask-image:linear-gradient(to bottom,rgba(0,0,0,.7),rgba(0,0,0,.15) 55%,transparent 90%);
+}
+body::after{
+  content:"";
+  position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(circle at 50% 45%,transparent 45%,rgba(243,247,244,.55) 100%);
+}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+img,svg,video{display:block}
+::selection{background:var(--mint);color:#fff}
+.mono{font-family:var(--mono)}
+.noise{position:fixed;inset:0;pointer-events:none;z-index:2;opacity:.055;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");}
+
+/* ---------- chrome ---------- */
+#cursorGlow{
+  position:fixed;width:360px;height:360px;border-radius:50%;pointer-events:none;z-index:1;
+  background:radial-gradient(circle,rgba(14,174,147,.12),transparent 68%);
+  transform:translate(-50%,-50%);opacity:0;transition:opacity .3s;
+}
+.topbar{
+  position:fixed;top:0;left:0;right:0;height:88px;z-index:20;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 48px;
+}
+.brand{display:flex;align-items:center;gap:12px;letter-spacing:-.02em}
+.brand img{width:34px;height:34px;border-radius:10px;box-shadow:0 8px 22px rgba(8,127,108,.2)}
+.brand b{font-size:17px;font-weight:650}
+.brand .ver{
+  font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--mint-deep);
+  border:1px solid rgba(8,127,108,.24);border-radius:999px;padding:4px 8px;
+  background:rgba(216,245,236,.7)
+}
+.topmeta{display:flex;align-items:center;gap:14px;font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--muted)}
+.topmeta i{width:34px;height:1px;background:var(--line-strong)}
+.topmeta b{font-weight:500;color:var(--ink-soft)}
+
+.rail{
+  position:fixed;left:34px;top:50%;transform:translateY(-50%);z-index:20;
+  display:flex;flex-direction:column;gap:18px;
+}
+.rail button{
+  display:flex;align-items:center;gap:10px;color:var(--muted);text-align:left;
+  opacity:.58;transition:opacity .25s,color .25s;
+}
+.rail button:hover,.rail button.active{opacity:1;color:var(--ink)}
+.rail .num{font-family:var(--mono);font-size:10px;letter-spacing:.06em}
+.rail .bar{display:block;width:22px;height:1px;background:currentColor;transition:width .3s}
+.rail button.active .bar{width:44px;background:var(--mint)}
+.rail .label{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;width:0;overflow:hidden;white-space:nowrap;transition:width .3s}
+.rail button.active .label{width:92px}
+
+.progress{position:fixed;top:0;left:0;right:0;height:2px;z-index:30;background:rgba(8,27,24,.06)}
+.progress span{display:block;height:100%;width:16.666%;background:linear-gradient(90deg,var(--mint),var(--lime));transition:width .65s cubic-bezier(.2,.75,.2,1)}
+.pagecount{position:fixed;right:48px;bottom:40px;z-index:20;font-family:var(--mono);color:var(--muted);font-size:11px;letter-spacing:.1em}
+.pagecount b{color:var(--ink);font-size:15px;font-weight:500}
+
+.bottom{
+  position:fixed;left:50%;bottom:32px;transform:translateX(-50%);z-index:20;
+  display:flex;align-items:center;gap:28px;
+}
+.navbtn{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--muted);transition:color .2s}
+.navbtn:hover{color:var(--ink)}
+.dots{display:flex;gap:7px}
+.dots button{width:5px;height:5px;border-radius:50%;background:rgba(8,27,24,.2);transition:.25s}
+.dots button.active{width:18px;border-radius:3px;background:var(--mint)}
+
+/* ---------- slides ---------- */
+.deck{position:relative;width:100%;height:100dvh;z-index:1}
+.slide{
+  position:absolute;inset:0;padding:116px 7vw 92px;
+  display:flex;align-items:center;
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity .55s ease,visibility .55s ease;
+}
+.slide.active{opacity:1;visibility:visible;pointer-events:auto}
+.slide-inner{width:100%;max-width:1400px;margin:0 auto;position:relative}
+.kicker{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:10px;letter-spacing:.17em;text-transform:uppercase;color:var(--mint-deep);margin-bottom:22px}
+.kicker::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--mint);box-shadow:0 0 0 4px rgba(14,174,147,.12);animation:pulse 2.4s infinite}
+.kicker .dim{color:var(--muted)}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(14,174,147,.1)}50%{box-shadow:0 0 0 8px rgba(14,174,147,.02)}}
+h2{font-size:clamp(38px,4.6vw,74px);line-height:1.02;letter-spacing:-.055em;font-weight:650}
+h2 em{font-style:normal;color:var(--mint-deep)}
+.sub{color:var(--muted);font-size:clamp(14px,1.25vw,17px);line-height:1.8;max-width:52ch}
+.anim{opacity:1;transform:none}
+.slide.active .anim{animation:rise .85s cubic-bezier(.16,.8,.2,1) forwards;animation-delay:var(--d,0s)}
+@keyframes rise{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
+
+/* ---------- hero ---------- */
+.hero{display:grid;grid-template-columns:1.04fr .96fr;gap:4vw;align-items:center}
+.hero-title{font-size:clamp(62px,8.1vw,132px);line-height:.93;letter-spacing:-.075em;font-weight:650}
+.hero-title .lite{display:block;color:var(--muted);font-weight:300}
+.hero-title .mark{display:inline-block;position:relative;color:var(--ink)}
+.hero-title .mark::after{content:"";position:absolute;left:2%;right:-2%;bottom:.06em;height:.12em;background:var(--lime);z-index:-1;transform:skewX(-12deg)}
+.hero-title .accent{color:var(--mint-deep)}
+.hero-lede{margin-top:26px;font-size:clamp(15px,1.3vw,18px);line-height:1.9;color:var(--muted);max-width:34em}
+.hero-lede b{color:var(--ink);font-weight:600}
+.hero-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:26px}
+.tag{font-family:var(--mono);font-size:10px;letter-spacing:.08em;border:1px solid var(--line);border-radius:999px;padding:7px 11px;color:var(--ink-soft);background:rgba(255,255,255,.55)}
+.tag.mint{border-color:rgba(14,174,147,.32);color:var(--mint-deep);background:rgba(216,245,236,.55)}
+.hero-actions{display:flex;align-items:center;gap:22px;margin-top:36px}
+.cta{
+  display:inline-flex;align-items:center;gap:14px;background:var(--ink);color:#fff;
+  padding:15px 20px 15px 24px;border-radius:999px;font-size:13px;letter-spacing:.02em;
+  box-shadow:0 16px 38px rgba(8,27,24,.17);transition:transform .25s,box-shadow .25s
+}
+.cta:hover{transform:translateY(-2px);box-shadow:0 20px 44px rgba(8,27,24,.24)}
+.cta span{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--lime);color:var(--ink);font-size:14px}
+.quiet-link{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--muted);border-bottom:1px solid var(--line-strong);padding-bottom:4px}
+.quiet-link:hover{color:var(--ink)}
+
+.hero-art{position:relative;min-height:520px;display:flex;align-items:center;justify-content:center}
+.hero-art::before{content:"";position:absolute;width:88%;aspect-ratio:1;border-radius:50%;border:1px solid rgba(14,174,147,.2);animation:spin 34s linear infinite;border-right-color:transparent;border-bottom-color:transparent}
+.hero-art::after{content:"";position:absolute;width:68%;aspect-ratio:1;border-radius:50%;border:1px dashed rgba(8,27,24,.14);animation:spin 26s linear infinite reverse}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hero-screen{
+  position:relative;width:min(580px,100%);background:#071816;border-radius:26px;
+  padding:16px 16px 18px;color:#eafff8;
+  box-shadow:0 40px 80px rgba(8,27,24,.25),0 0 0 1px rgba(255,255,255,.07) inset;
+  transform:rotate(-1.2deg);
+}
+.screen-top{display:flex;align-items:center;justify-content:space-between;font-family:var(--mono);font-size:9px;letter-spacing:.14em;color:#5c7f77;margin:2px 2px 12px}
+.screen-top .dots3{display:flex;gap:5px}
+.screen-top .dots3 i{width:5px;height:5px;border-radius:50%;background:#1b3a34}
+.screen-top .dots3 i:first-child{background:var(--mint)}
+.chart-wrap{position:relative;border-radius:16px;overflow:hidden;background:
+  linear-gradient(rgba(94,234,212,.055) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(94,234,212,.055) 1px,transparent 1px),
+  radial-gradient(120% 120% at 50% 0%,#0b2924,#061512 70%);
+  background-size:100% 48px,48px 100%,auto;border:1px solid rgba(94,234,212,.09)}
+.chart-wrap svg{width:100%;height:auto}
+.hero-path{fill:none;stroke:url(#lineGrad);stroke-width:3;stroke-linecap:round;pathLength:1000;stroke-dasharray:1000;stroke-dashoffset:1000}
+.slide.active .hero-path{animation:draw 2.5s .35s cubic-bezier(.2,.7,.2,1) forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+.hero-path-glow{fill:none;stroke:rgba(94,234,212,.2);stroke-width:12;filter:blur(4px);pathLength:1000;stroke-dasharray:1000;stroke-dashoffset:1000}
+.slide.active .hero-path-glow{animation:draw 2.5s .35s cubic-bezier(.2,.7,.2,1) forwards}
+.chart-label{font-family:var(--mono);font-size:8px;letter-spacing:.08em;fill:#50756d}
+.note-block{fill:rgba(183,243,74,.78)}
+.note-line{stroke:rgba(94,234,212,.18);stroke-width:1}
+.screen-meta{display:flex;justify-content:space-between;margin-top:12px;font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:#5c7f77}
+.screen-meta b{color:#b7f34a;font-weight:500}
+.float-card{
+  position:absolute;background:rgba(255,255,255,.86);backdrop-filter:blur(14px);
+  border:1px solid rgba(8,27,24,.1);border-radius:14px;padding:12px 14px;
+  box-shadow:0 18px 40px rgba(8,27,24,.12);font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--muted);
+}
+.float-card b{display:block;color:var(--ink);font-family:var(--sans);font-size:13px;letter-spacing:-.01em;margin-bottom:3px}
+.float-a{top:9%;right:-4%;animation:float 7s ease-in-out infinite}
+.float-b{bottom:7%;left:-5%;animation:float 8s ease-in-out infinite reverse}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-11px)}}
+.hero-foot{position:absolute;left:0;right:0;bottom:-64px;display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:9px;letter-spacing:.14em;color:var(--muted)}
+.hero-foot .scroll{display:flex;align-items:center;gap:9px}
+.hero-foot .scroll i{display:block;width:1px;height:24px;background:var(--line-strong);position:relative;overflow:hidden}
+.hero-foot .scroll i::after{content:"";position:absolute;top:-50%;left:0;width:1px;height:50%;background:var(--mint);animation:scrollline 1.8s infinite}
+@keyframes scrollline{to{top:110%}}
+
+/* ---------- generic slide head ---------- */
+.slide-head{display:flex;justify-content:space-between;align-items:flex-end;gap:40px;margin-bottom:38px}
+.slide-head .sub{max-width:43ch;text-align:right;font-size:13px;line-height:1.85}
+
+/* ---------- capabilities ---------- */
+.pipeline{display:flex;align-items:center;gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px 0;margin-bottom:30px;overflow:hidden}
+.pipeline .step{font-family:var(--mono);font-size:9px;letter-spacing:.13em;color:var(--muted);white-space:nowrap}
+.pipeline .step b{color:var(--ink);font-weight:500}
+.pipeline .arrow{flex:1;height:1px;background:linear-gradient(90deg,var(--line-strong),rgba(14,174,147,.5));margin:0 16px;position:relative}
+.pipeline .arrow::after{content:"";position:absolute;right:0;top:-2px;width:5px;height:5px;border-top:1px solid var(--mint);border-right:1px solid var(--mint);transform:rotate(45deg)}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.card{position:relative;background:rgba(255,255,255,.66);border:1px solid var(--line);border-radius:18px;padding:22px 20px 20px;backdrop-filter:blur(12px);transition:transform .3s,border-color .3s,box-shadow .3s;overflow:hidden}
+.card::after{content:"";position:absolute;right:-30px;top:-30px;width:100px;height:100px;border-radius:50%;background:radial-gradient(circle,rgba(14,174,147,.12),transparent 70%);opacity:.7}
+.card:hover{transform:translateY(-5px);border-color:rgba(14,174,147,.38);box-shadow:0 18px 38px rgba(8,27,24,.08)}
+.card-num{font-family:var(--mono);font-size:9px;color:var(--mint-deep);letter-spacing:.1em}
+.card h3{font-size:18px;letter-spacing:-.02em;margin:18px 0 9px;font-weight:650}
+.card p{font-size:12px;line-height:1.75;color:var(--muted)}
+.card .meta{display:flex;gap:7px;flex-wrap:wrap;margin-top:15px}
+.card .meta span{font-family:var(--mono);font-size:8px;letter-spacing:.05em;border:1px solid var(--line);border-radius:999px;padding:4px 7px;color:var(--muted)}
+.icon{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--mint-pale);color:var(--mint-deep);border:1px solid rgba(14,174,147,.18)}
+.icon svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+
+/* ---------- PIT slide ---------- */
+.pit-grid{display:grid;grid-template-columns:.82fr 1.18fr;gap:4vw;align-items:center}
+.pit-copy h2{margin-bottom:20px}
+.pit-copy .sub{max-width:40ch}
+.statline{display:flex;gap:26px;margin-top:30px}
+.statline .stat b{display:block;font-family:var(--mono);font-size:22px;font-weight:500;letter-spacing:-.04em}
+.statline .stat span{display:block;font-family:var(--mono);font-size:8px;letter-spacing:.13em;color:var(--muted);margin-top:4px}
+.chart-panel{background:#071816;border-radius:24px;padding:16px 16px 14px;color:#eafff8;box-shadow:0 30px 70px rgba(8,27,24,.2);position:relative;overflow:hidden}
+.chart-panel::before{content:"";position:absolute;inset:0;background:radial-gradient(80% 60% at 50% 0%,rgba(14,174,147,.16),transparent 65%);pointer-events:none}
+.chart-head{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;letter-spacing:.13em;color:#5f837b;position:relative;z-index:1}
+.chart-head b{color:#b7f34a;font-weight:500}
+.chart-panel svg{width:100%;height:auto;margin-top:8px;position:relative;z-index:1}
+.tone-curve{fill:none;stroke-width:2.2;stroke-linecap:round;pathLength:1000;stroke-dasharray:1000;stroke-dashoffset:1000}
+.slide.active .tone-curve{animation:draw 2.2s .2s cubic-bezier(.2,.7,.2,1) forwards}
+.tone-label{font-family:var(--mono);font-size:8px;fill:#6d8f87;letter-spacing:.06em}
+.tone-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:16px;position:relative;z-index:1}
+.tone{padding:10px 11px 12px;border:1px solid rgba(94,234,212,.12);border-radius:10px;background:rgba(255,255,255,.03)}
+.tone .name{font-family:var(--mono);font-size:8px;color:#6d8f87;letter-spacing:.08em}
+.tone .val{display:flex;align-items:baseline;justify-content:space-between;margin-top:4px}
+.tone .val b{font-size:13px;font-weight:500}
+.tone .val i{font-style:normal;font-family:var(--mono);font-size:8px;color:#5f837b}
+.tone .track{height:2px;background:rgba(255,255,255,.1);border-radius:2px;margin-top:9px;position:relative}
+.tone .track::after{content:"";position:absolute;left:0;top:0;bottom:0;width:var(--w,40%);background:var(--c,var(--mint));border-radius:2px}
+.tone .track::before{content:"";position:absolute;top:50%;left:var(--w,40%);width:7px;height:7px;border-radius:50%;background:var(--c,var(--mint));transform:translate(-50%,-50%);box-shadow:0 0 0 3px rgba(14,174,147,.12)}
+.tone-strip .t1{--c:#5eead4;--w:64%}.tone-strip .t2{--c:#7aa7ff;--w:54%}.tone-strip .t3{--c:#ffd166;--w:34%}.tone-strip .t4{--c:#ff8fa3;--w:48%}.tone-strip .t5{--c:#b7f34a;--w:28%}
+.pit-badge{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:var(--mint-deep);border:1px solid rgba(14,174,147,.25);background:rgba(216,245,236,.6);border-radius:999px;padding:8px 12px;margin-top:22px}
+.pit-badge i{width:6px;height:6px;border-radius:50%;background:var(--mint)}
+
+/* ---------- workflow ---------- */
+.workflow{display:grid;grid-template-columns:1.08fr .92fr;gap:4vw;align-items:center}
+.shot-frame{position:relative;padding:14px;border:1px solid var(--line);border-radius:20px;background:rgba(255,255,255,.45);box-shadow:0 28px 60px rgba(8,27,24,.1)}
+.window{border-radius:13px;overflow:hidden;background:#071816;box-shadow:0 0 0 1px rgba(255,255,255,.06) inset}
+.window-bar{height:28px;display:flex;align-items:center;gap:5px;padding:0 10px;background:#0b211d;border-bottom:1px solid rgba(94,234,212,.08)}
+.window-bar i{width:5px;height:5px;border-radius:50%;background:#1b3c35}
+.window-bar i:first-child{background:var(--coral)}
+.window-bar span{margin-left:8px;font-family:var(--mono);font-size:8px;color:#577b72;letter-spacing:.08em}
+.window img{width:100%;height:auto}
+.shot-tag{position:absolute;font-family:var(--mono);font-size:8px;letter-spacing:.1em;color:var(--mint-deep);background:rgba(216,245,236,.86);border:1px solid rgba(14,174,147,.25);border-radius:999px;padding:5px 8px}
+.shot-tag.a{top:-10px;right:26px}.shot-tag.b{bottom:20px;left:-16px;color:var(--ink-soft);background:rgba(255,255,255,.9)}
+.compat{display:flex;flex-direction:column;gap:0;margin-top:26px}
+.compat-row{display:flex;gap:16px;align-items:flex-start;padding:15px 0;border-bottom:1px solid var(--line)}
+.compat-row:first-child{border-top:1px solid var(--line)}
+.compat-row .k{font-family:var(--mono);font-size:9px;color:var(--mint-deep);letter-spacing:.08em;min-width:54px;padding-top:3px}
+.compat-row h4{font-size:14px;font-weight:650;letter-spacing:-.01em}
+.compat-row p{font-size:11px;line-height:1.65;color:var(--muted);margin-top:3px}
+.compat-row .pill{margin-left:auto;font-family:var(--mono);font-size:8px;padding:4px 7px;border:1px solid var(--line);border-radius:999px;color:var(--muted);white-space:nowrap}
+
+/* ---------- demo ---------- */
+.demo-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:4vw;align-items:center}
+.video-stage{position:relative;border-radius:22px;overflow:hidden;background:#071816;aspect-ratio:16/10;min-height:420px;border:1px solid rgba(8,27,24,.12);box-shadow:0 30px 70px rgba(8,27,24,.18)}
+.video-stage img,.video-stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.video-stage video{display:none;z-index:2}
+.video-stage.has-video video{display:block}
+.video-stage.has-video .demo-fallback{display:none}
+.video-stage .demo-fallback{position:absolute;inset:0;background:#071816;z-index:1}
+.video-stage .demo-fallback::after{content:"";position:absolute;inset:0;background:radial-gradient(60% 60% at 50% 45%,rgba(14,174,147,.18),transparent 60%),linear-gradient(180deg,rgba(7,24,22,.15),rgba(7,24,22,.82))}
+.video-stage .demo-fallback img{object-fit:cover;opacity:.38;filter:blur(2px) saturate(.65) brightness(.8);transform:scale(1.04)}
+.video-shade{position:absolute;inset:0;z-index:3;background:linear-gradient(180deg,rgba(7,24,22,.15),transparent 30%,rgba(7,24,22,.75));pointer-events:none}
+.video-top{position:absolute;top:14px;left:16px;right:16px;z-index:4;display:flex;justify-content:space-between;font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:rgba(234,255,248,.75)}
+.video-top b{color:var(--lime);font-weight:500}
+.video-caption{position:absolute;left:18px;right:18px;bottom:16px;z-index:4;display:flex;justify-content:space-between;align-items:flex-end;color:#eafff8}
+.video-caption b{font-size:15px;letter-spacing:-.02em;font-weight:600}
+.video-caption span{font-family:var(--mono);font-size:8px;color:rgba(234,255,248,.55);letter-spacing:.08em}
+.play-badge{position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#eafff8;text-align:center;pointer-events:none}
+.play-badge .play{width:58px;height:58px;border-radius:50%;border:1px solid rgba(183,243,74,.55);display:grid;place-items:center;background:rgba(7,24,22,.4);box-shadow:0 0 0 8px rgba(183,243,74,.06);font-size:17px;color:#b7f34a;padding-left:3px}
+.play-badge b{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:#b7f34a;font-weight:500}
+.play-badge small{font-family:var(--mono);font-size:8px;letter-spacing:.08em;color:rgba(234,255,248,.45)}
+.video-stage.has-video .play-badge{display:none}
+.scanline{position:absolute;inset:0;z-index:5;pointer-events:none;opacity:.35;background:repeating-linear-gradient(0deg,rgba(255,255,255,.035) 0 1px,transparent 1px 5px)}
+.demo-copy h2{margin-bottom:20px}
+.demo-stats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:26px}
+.demo-stats .s{background:rgba(255,255,255,.72);padding:15px 16px}
+.demo-stats b{display:block;font-family:var(--mono);font-size:23px;font-weight:500;letter-spacing:-.04em}
+.demo-stats span{display:block;font-family:var(--mono);font-size:8px;letter-spacing:.1em;color:var(--muted);margin-top:4px}
+.demo-note{font-family:var(--mono);font-size:8px;letter-spacing:.06em;color:var(--muted);margin-top:14px}
+
+/* ---------- finale ---------- */
+.finale{display:flex;justify-content:center;align-items:center;text-align:center;position:relative}
+.finale-inner{position:relative;z-index:2;max-width:900px;margin:0 auto}
+.finale .rings{position:absolute;inset:50% auto auto 50%;transform:translate(-50%,-50%);width:min(74vw,760px);aspect-ratio:1;border-radius:50%;border:1px solid rgba(14,174,147,.16);pointer-events:none}
+.finale .rings::before,.finale .rings::after{content:"";position:absolute;inset:10%;border-radius:50%;border:1px dashed rgba(8,27,24,.12)}
+.finale .rings::after{inset:24%;border-style:solid;border-color:rgba(14,174,147,.12)}
+.finale-logo{width:78px;height:78px;border-radius:22px;margin:0 auto 24px;box-shadow:0 20px 40px rgba(8,127,108,.2)}
+.finale h2{font-size:clamp(60px,8vw,124px);letter-spacing:-.07em;line-height:.9}
+.finale h2 em{color:var(--mint-deep)}
+.finale .sub{margin:22px auto 0;text-align:center}
+.finale-actions{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:32px}
+.dl{display:inline-flex;align-items:center;gap:12px;padding:14px 20px;border-radius:999px;font-size:12px;letter-spacing:.01em;transition:.25s}
+.dl.primary{background:var(--ink);color:#fff;box-shadow:0 16px 38px rgba(8,27,24,.18)}
+.dl.primary span{width:24px;height:24px;border-radius:50%;background:var(--lime);color:var(--ink);display:grid;place-items:center;font-size:13px}
+.dl.ghost{border:1px solid var(--line-strong);color:var(--ink);background:rgba(255,255,255,.45)}
+.dl:hover{transform:translateY(-2px)}
+.finale-meta{display:flex;justify-content:center;gap:18px;flex-wrap:wrap;margin-top:26px;font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:var(--muted)}
+.finale-meta i{width:1px;height:10px;background:var(--line-strong)}
+.finale-copy{margin-top:44px;font-family:var(--mono);font-size:8px;letter-spacing:.13em;color:#84958f}
+
+/* ---------- responsive ---------- */
+@media (max-width:1100px){
+  .topbar{padding:0 30px}.rail{display:none}.pagecount{right:30px}.slide{padding:104px 5vw 86px}
+  .hero{grid-template-columns:1fr;gap:34px}.hero-art{min-height:400px}.hero-title{font-size:clamp(62px,10vw,110px)}
+  .hero-foot{display:none}.cards{grid-template-columns:1fr 1fr}.slide-head{flex-direction:column;align-items:flex-start;gap:14px}.slide-head .sub{text-align:left}
+  .pit-grid,.workflow,.demo-grid{grid-template-columns:1fr;gap:28px}.pit-copy .sub{max-width:none}
+  .bottom{bottom:20px}
+}
+@media (max-width:700px){
+  .topbar{height:70px;padding:0 18px}.topmeta{display:none}.brand b{font-size:14px}
+  .slide{padding:88px 20px 76px;align-items:flex-start;overflow-y:auto;overflow-x:hidden}.deck{overflow:hidden}
+  .slide-inner,.hero,.hero-copy,.hero-art,.pit-copy,.chart-panel,.demo-copy,.video-stage{min-width:0;max-width:100%}
+  h2{font-size:38px}.hero-title{font-size:52px}.hero-lede{font-size:14px;max-width:100%}
+  .hero-art{min-height:340px;width:100%;overflow:hidden}.hero-screen{width:calc(100vw - 40px);max-width:calc(100vw - 40px);transform:none}.float-a{right:8px;top:6%}.float-b{left:8px;bottom:4%}
+  .hero-title,.hero-lede,.hero-tags{max-width:calc(100vw - 40px)}
+  .hero-tags{gap:6px}.tag{font-size:9px;padding:6px 8px}
+  .hero-actions{gap:14px;flex-wrap:wrap}.cta{padding:13px 16px}
+  .cards{grid-template-columns:1fr}.card{padding:18px}
+  .pipeline .step{font-size:8px}.pipeline .arrow{margin:0 8px}
+  .statline{gap:14px;flex-wrap:wrap}.statline .stat b{font-size:18px}
+  .tone-strip{grid-template-columns:repeat(3,1fr)}.tone:nth-child(n+4){display:none}
+  .bottom{gap:12px}.navbtn{font-size:8px}.dots{display:none}
+  .pagecount{right:18px;bottom:24px}
+  .demo-stats{grid-template-columns:1fr}
+  .finale h2{font-size:52px}
+  .slide-head .sub{text-align:left}.shot-frame{padding:9px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+}
+</style>
+</head>
+<body>
+<div class="noise"></div>
+<div id="cursorGlow"></div>
+
+<header class="topbar">
+  <a class="brand" href="#slide-1" aria-label="VocaloidTTS">
+    <img src="assets/icon.png" alt="">
+    <b>VocaloidTTS</b>
+    <span class="ver">1.1</span>
+  </a>
+  <div class="topmeta">
+    <span>VSQX / SVIP3 / USTX</span><i></i><span>V4 / V5 · X STUDIO · OPENUTAU</span>
+  </div>
+</header>
+
+<nav class="rail" aria-label="幻灯片导航">
+  <button data-go="0" class="active"><span class="num">01</span><span class="bar"></span><span class="label">INTRO</span></button>
+  <button data-go="1"><span class="num">02</span><span class="bar"></span><span class="label">FEATURES</span></button>
+  <button data-go="2"><span class="num">03</span><span class="bar"></span><span class="label">PITCH</span></button>
+  <button data-go="3"><span class="num">04</span><span class="bar"></span><span class="label">FLOW</span></button>
+  <button data-go="4"><span class="num">05</span><span class="bar"></span><span class="label">DEMO</span></button>
+  <button data-go="5"><span class="num">06</span><span class="bar"></span><span class="label">DOWNLOAD</span></button>
+</nav>
+
+<div class="progress"><span id="progressBar"></span></div>
+<div class="pagecount"><b id="currentNum">01</b> / 06</div>
+
+<main class="deck" id="deck">
+  <!-- 01 HERO -->
+  <section class="slide active" data-slide="0" aria-hidden="false">
+    <div class="slide-inner">
+      <div class="hero">
+        <div class="hero-copy">
+          <div class="kicker anim" style="--d:.05s">VOCALOID SPEECH SYNTHESIS <span class="dim">/ 2026</span></div>
+          <h1 class="hero-title anim" style="--d:.12s">
+            <span class="lite">让歌姬</span>
+            <span class="mark">自己</span><span class="accent">说话。</span>
+          </h1>
+          <p class="hero-lede anim" style="--d:.22s">
+            <b>VocaloidTTS</b> 把中文 / 拼音文本变成歌姬的“说话声”。自动生成音符、五声基准、
+            PIT 音高曲线与表情参数，可输出 <b>VSQX / X Studio / OpenUTAU / OpenSVIP</b>，在对应软件中打开即可继续微调。
+          </p>
+          <div class="hero-tags anim" style="--d:.3s">
+            <span class="tag mint">中文 / 拼音直输</span>
+            <span class="tag">五声独立滑条</span>
+            <span class="tag">PIT 5ms</span>
+            <span class="tag">V4 / V5</span>
+            <span class="tag">X Studio 3</span>
+            <span class="tag">OpenUTAU</span>
+            <span class="tag">从TXT文件导入文字</span>
+          </div>
+          <div class="hero-actions anim" style="--d:.38s">
+            <button class="cta" data-next>开始探索 <span>→</span></button>
+            <a class="quiet-link" href="#slide-2" data-go="1">查看功能</a>
+          </div>
+        </div>
+
+        <div class="hero-art anim" style="--d:.3s">
+          <div class="hero-screen">
+            <div class="screen-top">
+              <span>PIT CONTOUR / VOICE</span>
+              <span class="dots3"><i></i><i></i><i></i></span>
+            </div>
+            <div class="chart-wrap">
+              <svg viewBox="0 0 720 420" role="img" aria-label="动态 PIT 音高曲线">
+                <defs>
+                  <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stop-color="#5eead4"/><stop offset=".55" stop-color="#b7f34a"/><stop offset="1" stop-color="#5eead4"/>
+                  </linearGradient>
+                  <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#5eead4" stop-opacity=".15"/><stop offset="1" stop-color="#5eead4" stop-opacity="0"/>
+                  </linearGradient>
+                </defs>
+                <g stroke="rgba(94,234,212,.08)" stroke-width="1">
+                  <line x1="0" y1="90" x2="720" y2="90"/><line x1="0" y1="180" x2="720" y2="180"/><line x1="0" y1="270" x2="720" y2="270"/><line x1="0" y1="360" x2="720" y2="360"/>
+                  <line x1="120" y1="0" x2="120" y2="420"/><line x1="240" y1="0" x2="240" y2="420"/><line x1="360" y1="0" x2="360" y2="420"/><line x1="480" y1="0" x2="480" y2="420"/><line x1="600" y1="0" x2="600" y2="420"/>
+                </g>
+                <text x="14" y="24" class="chart-label">C4</text><text x="14" y="114" class="chart-label">A3</text><text x="14" y="204" class="chart-label">F#3</text><text x="14" y="294" class="chart-label">D3</text><text x="14" y="384" class="chart-label">A2</text>
+                <path d="M0,300 C40,300 50,260 80,250 C110,240 120,300 150,300 C180,300 195,180 230,180 C270,180 280,280 315,280 C350,280 365,220 400,220 C440,220 455,120 500,120 C540,120 560,260 600,260 C640,260 660,180 720,180 L720,420 L0,420 Z" fill="url(#areaGrad)"/>
+                <path id="heroPath" class="hero-path-glow" d="M0,300 C40,300 50,260 80,250 C110,240 120,300 150,300 C180,300 195,180 230,180 C270,180 280,280 315,280 C350,280 365,220 400,220 C440,220 455,120 500,120 C540,120 560,260 600,260 C640,260 660,180 720,180"/>
+                <path class="hero-path" d="M0,300 C40,300 50,260 80,250 C110,240 120,300 150,300 C180,300 195,180 230,180 C270,180 280,280 315,280 C350,280 365,220 400,220 C440,220 455,120 500,120 C540,120 560,260 600,260 C640,260 660,180 720,180"/>
+                <g>
+                  <rect class="note-block" x="30" y="332" width="68" height="9" rx="3"/><rect class="note-block" x="120" y="326" width="92" height="9" rx="3" opacity=".85"/><rect class="note-block" x="232" y="342" width="66" height="9" rx="3" opacity=".9"/><rect class="note-block" x="318" y="318" width="72" height="9" rx="3" opacity=".8"/><rect class="note-block" x="412" y="350" width="88" height="9" rx="3"/><rect class="note-block" x="520" y="322" width="64" height="9" rx="3" opacity=".85"/><rect class="note-block" x="612" y="340" width="78" height="9" rx="3" opacity=".9"/>
+                </g>
+                <circle r="5" fill="#b7f34a"><animateMotion dur="6s" repeatCount="indefinite" rotate="auto"><mpath href="#heroPath"/></animateMotion></circle>
+                <circle r="12" fill="#b7f34a" opacity=".15"><animateMotion dur="6s" repeatCount="indefinite"><mpath href="#heroPath"/></animateMotion></circle>
+              </svg>
+            </div>
+            <div class="screen-meta"><span>120 BPM · 4 / 4</span><span><b>PIT</b> 649 POINTS</span></div>
+          </div>
+          <div class="float-card float-a"><b>五声 · 独立</b>G3 / F#3 / E3 / F3 / E3</div>
+          <div class="float-card float-b"><b>四种工程</b>一份生成结果，多端打开</div>
+        </div>
+      </div>
+      <div class="hero-foot">
+        <span>VOICE SYNTHESIS / MULTI-FORMAT EXPORT</span>
+        <span class="scroll"><i></i> CLICK TO CONTINUE</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 FEATURES -->
+  <section class="slide" data-slide="1" aria-hidden="true">
+    <div class="slide-inner">
+      <div class="slide-head">
+        <div>
+          <div class="kicker anim">02 <span class="dim">/ CAPABILITIES</span></div>
+          <h2 class="anim" style="--d:.08s">从文字<br>更方便地<em>转为工程</em>。</h2>
+        </div>
+        <p class="sub anim" style="--d:.16s">不是简单的“TTS”。VocaloidTTS 把中文发音、五声基准、PIT 曲线、节拍与 VOCALOID 工程格式串成了一条完整流水线。</p>
+      </div>
+      <div class="pipeline anim" style="--d:.18s">
+        <div class="step"><b>TEXT</b> / 中文·拼音</div><div class="arrow"></div>
+        <div class="step"><b>SYLLABLE</b> / 音节</div><div class="arrow"></div>
+        <div class="step"><b>TONE</b> / 五声</div><div class="arrow"></div>
+        <div class="step"><b>PIT</b> / 音高</div><div class="arrow"></div>
+        <div class="step"><b>VSQX / SVIP3 / USTX</b> / 工程</div>
+      </div>
+      <div class="cards">
+        <article class="card anim" style="--d:.20s">
+          <div class="icon"><svg viewBox="0 0 24 24"><path d="M5 5h14M5 12h9M5 19h12"/><path d="M17 9l3 3-3 3"/></svg></div>
+          <div class="card-num">01 / TEXT</div>
+          <h3>中文 / 拼音，直入</h3>
+          <p>中文自动分词、多音字、儿化与轻声；拼音模式直接写 ni3 hao3，跳过汉字判断。还可以把 .txt 拖进窗口导入歌词。</p>
+          <div class="meta"><span>拼音直输</span><span>TXT 导入</span></div>
+        </article>
+        <article class="card anim" style="--d:.27s">
+          <div class="icon"><svg viewBox="0 0 24 24"><path d="M4 16V8M8 19V5M12 16V8M16 20V4M20 15V9"/></svg></div>
+          <div class="card-num">02 / TONE</div>
+          <h3>五声，独立滑条</h3>
+          <p>一声到四声和轻声各有自己的基准，怎么方便怎么调。</p>
+          <div class="meta"><span>G3 / F#3 / E3</span><span>轻声也可以调整。</span></div>
+        </article>
+        <article class="card anim" style="--d:.34s">
+          <div class="icon"><svg viewBox="0 0 24 24"><path d="M3 17c3 0 3-8 6-8s3 6 6 6 3-9 6-9"/><circle cx="3" cy="17" r="1"/><circle cx="21" cy="6" r="1"/></svg></div>
+          <div class="card-num">03 / PITCH</div>
+          <h3>PIT，细到 5ms</h3>
+          <p>约 5ms 控制点 + 40ms 平滑。保留 1.10 的时长与连贯语流，同时让 V4/V5 里的曲线更细、更顺。</p>
+          <div class="meta"><span>5ms points</span><span>40ms smooth</span></div>
+        </article>
+        <article class="card anim" style="--d:.41s">
+          <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2.5"/></svg></div>
+          <div class="card-num">04 / TEMPO</div>
+          <h3>BPM 与拍号，可改</h3>
+          <p>默认 120 / 4/4，可改 90/3/4、140/6/8 等。Part 起点按拍号自动对齐到第 5 小节，VSQX 结构不跑偏。</p>
+          <div class="meta"><span>40–240 BPM</span><span>2/4 – 16/16</span></div>
+        </article>
+        <article class="card anim" style="--d:.48s">
+          <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 9h8M8 13h5"/></svg></div>
+          <div class="card-num">05 / COMPAT</div>
+          <h3>四种格式，多端兼容</h3>
+          <p>V4/V5 用 VSQX；X Studio 3 用 .svip3；OpenUTAU 用 .ustx；还可导出 OpenSVIP .svip。音高、动态、气声、性别尽量映射。</p>
+          <div class="meta"><span>VSQX</span><span>X Studio 3</span><span>OpenUTAU</span><span>OpenSVIP</span></div>
+        </article>
+        <article class="card anim" style="--d:.55s">
+          <div class="icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v11H4z"/><path d="M8 7V5h8v2M8 12h8"/></svg></div>
+          <div class="card-num">06 / DESKTOP</div>
+          <h3>轻量、离线、可驻留</h3>
+          <p>本地 Tkinter 桌面工具，离线运行。自动扫描/手动添加声库，关闭后驻留托盘。</p>
+          <div class="meta"><span>Windows</span><span>Voicebank</span><span>Tray</span></div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 PITCH -->
+  <section class="slide" data-slide="2" aria-hidden="true">
+    <div class="slide-inner">
+      <div class="pit-grid">
+        <div class="pit-copy">
+          <div class="kicker anim">03 <span class="dim">/ PITCH MODEL</span></div>
+          <h2 class="anim" style="--d:.08s">支持<br><em>多声库。</em></h2>
+          <p class="sub anim" style="--d:.16s">Vocaloid TTS 会扫描电脑上已有的声库，可选择调用对应的歌姬。</p>
+          <div class="pit-badge anim" style="--d:.22s"><i></i> 1.10 发声时长 · 5ms PIT 控制点 · 40ms 平滑</div>
+          <div class="statline anim" style="--d:.28s">
+            <div class="stat"><b>5</b><span>VOICE TONES</span></div>
+            <div class="stat"><b>649</b><span>PIT POINTS / DEMO</span></div>
+            <div class="stat"><b>±12</b><span>SEMITONE RANGE</span></div>
+          </div>
+        </div>
+        <div class="chart-panel anim" style="--d:.2s">
+          <div class="chart-head"><span>FIVE TONES / PIT CONTOUR</span><span><b>LIVE</b> · 5ms</span></div>
+          <svg viewBox="0 0 760 410" role="img" aria-label="五声音高曲线">
+            <g stroke="rgba(94,234,212,.08)" stroke-width="1">
+              <line x1="40" y1="70" x2="740" y2="70"/><line x1="40" y1="150" x2="740" y2="150"/><line x1="40" y1="230" x2="740" y2="230"/><line x1="40" y1="310" x2="740" y2="310"/><line x1="40" y1="390" x2="740" y2="390"/>
+              <line x1="40" y1="40" x2="40" y2="390"/><line x1="215" y1="40" x2="215" y2="390"/><line x1="390" y1="40" x2="390" y2="390"/><line x1="565" y1="40" x2="565" y2="390"/><line x1="740" y1="40" x2="740" y2="390"/>
+            </g>
+            <text x="46" y="58" class="tone-label">G3</text><text x="46" y="138" class="tone-label">F#3</text><text x="46" y="218" class="tone-label">E3</text><text x="46" y="298" class="tone-label">D3</text><text x="46" y="378" class="tone-label">C3</text>
+            <path class="tone-curve" d="M55,220 C105,214 150,205 205,214 S300,225 360,216 S460,206 520,214 S635,220 700,214" stroke="#5eead4" opacity=".9"/>
+            <path class="tone-curve" d="M55,250 C105,300 150,330 205,300 S290,205 350,170 S455,140 520,175 S635,240 700,250" stroke="#7aa7ff" style="animation-delay:.45s"/>
+            <path class="tone-curve" d="M55,250 C110,270 150,300 205,300 S300,285 360,260 S470,240 530,255 S640,275 700,265" stroke="#ffd166" style="animation-delay:.7s"/>
+            <path class="tone-curve" d="M55,230 C100,205 145,185 205,190 S300,260 360,320 S470,375 540,370 S640,300 700,280" stroke="#ff8fa3" style="animation-delay:.95s"/>
+            <path class="tone-curve" d="M55,300 C120,304 185,310 250,312 S380,305 450,310 S610,314 700,310" stroke="#b7f34a" style="animation-delay:1.2s" opacity=".85"/>
+            <g font-family="Cascadia Mono,Consolas,monospace" font-size="8" fill="#5f837b">
+              <text x="46" y="405">一声</text><text x="180" y="405">二声</text><text x="330" y="405">三声</text><text x="500" y="405">四声</text><text x="660" y="405">轻声</text>
+            </g>
+          </svg>
+          <div class="tone-strip">
+            <div class="tone t1"><div class="name">一声 / 阴平</div><div class="val"><b>G3</b><i>67</i></div><div class="track"></div></div>
+            <div class="tone t2"><div class="name">二声 / 阳平</div><div class="val"><b>F#3</b><i>66</i></div><div class="track"></div></div>
+            <div class="tone t3"><div class="name">三声 / 上声</div><div class="val"><b>E3</b><i>64</i></div><div class="track"></div></div>
+            <div class="tone t4"><div class="name">四声 / 去声</div><div class="val"><b>F3</b><i>65</i></div><div class="track"></div></div>
+            <div class="tone t5"><div class="name">轻声</div><div class="val"><b>E3</b><i>64</i></div><div class="track"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 WORKFLOW -->
+  <section class="slide" data-slide="3" aria-hidden="true">
+    <div class="slide-inner">
+      <div class="slide-head">
+        <div>
+          <div class="kicker anim">04 <span class="dim">/ WORKFLOW</span></div>
+          <h2 class="anim" style="--d:.08s">从桌面，<br>到你的<em>编辑器</em>。</h2>
+        </div>
+        <p class="sub anim" style="--d:.16s">没有云端账号，没有中间格式。填文本、调声调、选格式，剩下的交给目标软件。</p>
+      </div>
+      <div class="workflow">
+        <div class="shot-frame anim" style="--d:.18s">
+          <div class="window">
+            <div class="window-bar"><i></i><i></i><i></i><span>VocaloidTTS.exe / 1.1</span></div>
+            <img src="assets/gui.png" alt="VocaloidTTS 界面截图">
+          </div>
+          <div class="shot-tag a">TXT / DRAG &amp; DROP</div>
+          <div class="shot-tag b">五声 / BPM / 拍号</div>
+        </div>
+        <div>
+          <div class="compat anim" style="--d:.24s">
+            <div class="compat-row"><div class="k">FORMAT</div><div><h4>同一份结果，多端导出</h4><p>V4/V5 用 .vsqx；X Studio 3 用 .svip3；OpenUTAU 用 .ustx；OpenSVIP 用 .svip。</p></div><span class="pill">4 FORMATS</span></div>
+            <div class="compat-row"><div class="k">TEMPO</div><div><h4>BPM 和拍号，写在工程里</h4><p>40–240 BPM，2/4 到 16/16；Part 自动落在第 5 小节。</p></div><span class="pill">120 / 4/4</span></div>
+            <div class="compat-row"><div class="k">TXT</div><div><h4>文本直接拖进来</h4><p>UTF-8 / UTF-16 / GB18030 自动识别，导入不触发渲染。</p></div><span class="pill">DRAG IN</span></div>
+            <div class="compat-row"><div class="k">TRAY</div><div><h4>关闭不退出，驻留托盘</h4><p>右键托盘图标再选择“退出 VocaloidTTS”。</p></div><span class="pill">OFFLINE</span></div>
+            <div class="compat-row"><div class="k">VOICE</div><div><h4>声库：自动扫描 + 手动添加</h4><p>每次启动扫描注册表、VoiceDB 和固定磁盘；非常规目录点“＋ 添加文件夹”，下次继续扫描。</p></div><span class="pill">AUTO + MANUAL</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 DEMO -->
+  <section class="slide" data-slide="4" aria-hidden="true">
+    <div class="slide-inner">
+      <div class="demo-grid">
+        <div class="video-stage" id="videoStage">
+          <div class="demo-fallback">
+            <img src="assets/gui.png" alt="VocaloidTTS 界面预览">
+          </div>
+          <video id="demoVideo" controls muted loop playsinline preload="metadata" poster="assets/gui.png">
+            <source src="assets/demo.mp4" type="video/mp4">
+          </video>
+          <div class="video-shade"></div>
+          <div class="play-badge"><span class="play">▶</span><b>DEMO REEL</b><small>把 demo.mp4 放入 assets/ 自动播放</small></div>
+          <div class="scanline"></div>
+          <div class="video-top"><span>DEMO / PREVIEW</span><span><b>VOCALOIDTTS 1.1</b></span></div>
+          <div class="video-caption"><b>从文本到会说话的歌声</b><span>AUTO PLAY / MUTED</span></div>
+        </div>
+        <div class="demo-copy">
+          <div class="kicker anim">05 <span class="dim">/ DEMO</span></div>
+          <h2 class="anim" style="--d:.08s">听它，<br><em>像在说话。</em></h2>
+          <p class="sub anim" style="--d:.16s">不是把每个字压成同一个音高，而是让每个音节带着自己的声调方向。生成后，在 V4/V5 里按空格试听。</p>
+          <div class="demo-stats anim" style="--d:.22s">
+            <div class="s"><b>14</b><span>SYLLABLES</span></div>
+            <div class="s"><b>3.38s</b><span>DURATION</span></div>
+            <div class="s"><b>649</b><span>PIT CONTROL POINTS</span></div>
+            <div class="s"><b>5</b><span>VOICE TONES</span></div>
+          </div>
+          <div class="demo-note anim" style="--d:.3s">DEMO VIDEO SLOT / assets/demo.mp4</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 DOWNLOAD -->
+  <section class="slide" data-slide="5" aria-hidden="true">
+    <div class="slide-inner finale">
+      <div class="rings"></div>
+      <div class="finale-inner">
+        <img class="finale-logo anim" src="assets/icon.png" alt="VocaloidTTS 图标" style="--d:.06s">
+        <div class="kicker anim" style="--d:.1s;justify-content:center">06 <span class="dim">/ RELEASE</span></div>
+        <h2 class="anim" style="--d:.16s">VocaloidTTS <em>1.1</em></h2>
+        <p class="sub anim" style="--d:.24s">把文字变成歌姬的说话声。<br>Windows 桌面工具 · VSQX · X Studio 3 · OpenUTAU · OpenSVIP</p>
+        <div class="finale-actions anim" style="--d:.3s">
+          <a class="dl primary" href="https://github.com/jinyiwei2012/VocaloidTTS#8-构建">Windows 构建说明 ↗</a>
+          <a class="dl ghost" href="https://github.com/jinyiwei2012/VocaloidTTS/archive/refs/heads/main.zip">下载源码 ↗</a>
+        </div>
+        <div class="finale-meta anim" style="--d:.36s"><span>WINDOWS 10 / 11</span><i></i><span>4 FORMATS</span><i></i><span>V4 / V5</span><i></i><span>OFFLINE</span></div>
+        <div class="finale-copy anim" style="--d:.42s">VOCALOIDTTS / SPEECH-LIKE INTONATION / 2026</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="bottom">
+  <button class="navbtn" id="prevBtn" aria-label="上一页">← PREV</button>
+  <div class="dots" id="dots" aria-label="页码">
+    <button data-go="0" class="active" aria-label="第 1 页"></button>
+    <button data-go="1" aria-label="第 2 页"></button>
+    <button data-go="2" aria-label="第 3 页"></button>
+    <button data-go="3" aria-label="第 4 页"></button>
+    <button data-go="4" aria-label="第 5 页"></button>
+    <button data-go="5" aria-label="第 6 页"></button>
+  </div>
+  <button class="navbtn" id="nextBtn" aria-label="下一页">NEXT →</button>
+</div>
+
+<script>
+(function(){
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const rail = Array.from(document.querySelectorAll('.rail button'));
+  const dots = Array.from(document.querySelectorAll('.dots button'));
+  const currentNum = document.getElementById('currentNum');
+  const progress = document.getElementById('progressBar');
+  const prevBtn = document.getElementById('prevBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  const stage = document.getElementById('videoStage');
+  const video = document.getElementById('demoVideo');
+  let current = 0;
+  let wheelLock = 0;
+  let touchX = null;
+
+  function pad(n){ return String(n).padStart(2,'0'); }
+
+  function go(n, scroll){
+    current = (n + slides.length) % slides.length;
+    slides.forEach((s,i)=>{
+      const active = i === current;
+      s.classList.toggle('active', active);
+      s.setAttribute('aria-hidden', active ? 'false' : 'true');
+      if(active){
+        // restart CSS animations without reloading the page
+        const animated = s.querySelectorAll('.anim, .hero-path, .hero-path-glow, .tone-curve');
+        animated.forEach(el=>{
+          el.style.animation = 'none';
+          void el.offsetWidth;
+          el.style.animation = '';
+        });
+      }
+    });
+    rail.forEach((b,i)=>b.classList.toggle('active', i===current));
+    dots.forEach((b,i)=>b.classList.toggle('active', i===current));
+    currentNum.textContent = pad(current+1);
+    progress.style.width = ((current+1)/slides.length*100) + '%';
+    if(video){
+      if(current === 4){
+        if(stage.classList.contains('has-video')){
+          video.play().catch(()=>{});
+        }
+      }else{
+        video.pause();
+      }
+    }
+    if(scroll !== false){
+      history.replaceState(null,'','#slide-'+(current+1));
+    }
+  }
+
+  function next(){ go(current+1); }
+  function prev(){ go(current-1); }
+
+  // navigation buttons
+  rail.forEach(b=>b.addEventListener('click', e=>{ e.stopPropagation(); go(+b.dataset.go); }));
+  dots.forEach(b=>b.addEventListener('click', e=>{ e.stopPropagation(); go(+b.dataset.go); }));
+  document.querySelectorAll('[data-go]').forEach(a=>{
+    a.addEventListener('click', e=>{ e.stopPropagation(); go(+a.dataset.go); });
+  });
+  document.querySelectorAll('[data-next]').forEach(b=>b.addEventListener('click', e=>{ e.stopPropagation(); next(); }));
+  prevBtn.addEventListener('click', e=>{ e.stopPropagation(); prev(); });
+  nextBtn.addEventListener('click', e=>{ e.stopPropagation(); next(); });
+
+  // click anywhere on the deck to advance, right-click to go back
+  document.getElementById('deck').addEventListener('click', e=>{
+    if(e.target.closest('a,button,video')) return;
+    next();
+  });
+  document.addEventListener('contextmenu', e=>{
+    if(e.target.closest('a,button,video')) return;
+    e.preventDefault(); prev();
+  });
+
+  // wheel / keyboard
+  window.addEventListener('wheel', e=>{
+    const now = Date.now();
+    if(now < wheelLock || Math.abs(e.deltaY) < 12) return;
+    wheelLock = now + 700;
+    if(e.deltaY > 0) next(); else prev();
+  }, {passive:true});
+
+  window.addEventListener('keydown', e=>{
+    if(e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' '){ e.preventDefault(); next(); }
+    else if(e.key === 'ArrowLeft' || e.key === 'PageUp'){ e.preventDefault(); prev(); }
+    else if(e.key === 'Home'){ e.preventDefault(); go(0); }
+    else if(e.key === 'End'){ e.preventDefault(); go(5); }
+  });
+
+  // touch swipe
+  document.getElementById('deck').addEventListener('touchstart', e=>{
+    touchX = e.changedTouches[0].clientX;
+  }, {passive:true});
+  document.getElementById('deck').addEventListener('touchend', e=>{
+    if(touchX === null) return;
+    const dx = e.changedTouches[0].clientX - touchX;
+    touchX = null;
+    if(Math.abs(dx) > 44){ dx < 0 ? next() : prev(); }
+  }, {passive:true});
+
+  // pointer glow
+  const glow = document.getElementById('cursorGlow');
+  window.addEventListener('pointermove', e=>{
+    if(e.pointerType === 'mouse'){
+      glow.style.opacity = '1';
+      glow.style.left = e.clientX + 'px';
+      glow.style.top = e.clientY + 'px';
+    }
+  });
+  window.addEventListener('pointerleave', ()=>{ glow.style.opacity = '0'; });
+
+  // demo video: silently fall back to the GUI screenshot if no mp4 exists
+  if(video){
+    video.addEventListener('loadeddata', ()=>{
+      stage.classList.add('has-video');
+      if(current === 4) video.play().catch(()=>{});
+    });
+    video.addEventListener('error', ()=>{ stage.classList.remove('has-video'); });
+    try{ video.load(); }catch(_){}
+  }
+
+  // initial slide via #slide-N or ?slide=N
+  const hash = location.hash.match(/slide-(\d+)/);
+  const q = new URLSearchParams(location.search).get('slide');
+  const initial = hash ? +hash[1]-1 : (q ? +q-1 : 0);
+  go(Number.isFinite(initial) ? initial : 0, false);
+  document.body.classList.add('loaded');
+})();
+</script>
+</body>
+</html>

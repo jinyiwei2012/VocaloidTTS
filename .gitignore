@@ -1,0 +1,36 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Build and release artifacts (keep source, assets and demo projects)
+/build/
+/dist/
+/release/
+/release_web/downloads/
+/release_web/previews/
+*.zip
+
+# Local configuration, logs and generated user projects
+.env
+.env.*
+!.env.example
+*.log
+/VocaloidTTS_Output/
+/VocaloidTTS_boot.txt
+/VocaloidTTS_selftest.*
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
