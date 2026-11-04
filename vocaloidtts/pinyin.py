@@ -45,18 +45,31 @@ def num_to_chinese(n: int) -> str:
         return "零"
     if n < 0:
         return "负" + num_to_chinese(-n)
-    parts: list[str] = []
-    group = 0
+    sections: list[int] = []
     while n > 0:
-        sec = n % 10000
-        if sec:
-            text = _section_to_chinese(sec) + _BIG_UNITS[group]
-            parts.append(text)
-        elif parts:
+        n, sec = divmod(n, 10000)
+        sections.append(sec)
+    if len(sections) > len(_BIG_UNITS):
+        # Keep unusually large decimal whole parts readable without indexing
+        # beyond the supported units (ordinary long IDs already use digits).
+        digits = str(sections[-1]) + "".join(f"{sec:04d}" for sec in reversed(sections[:-1]))
+        return "".join(_DIGITS[int(c)] for c in digits)
+    parts: list[str] = []
+    missing_group = False
+    for group in range(len(sections) - 1, -1, -1):
+        sec = sections[group]
+        if not sec:
+            missing_group = True
+            continue
+        if parts and (missing_group or sec < 1000):
             parts.append("零")
-        n //= 10000
-        group += 1
-    return "".join(reversed(parts)).replace("零零", "零").strip("零") or "零"
+        text = _section_to_chinese(sec)
+        if parts and 10 <= sec < 20:
+            # Omit 一 only at the start: 十万, but 一万零一十.
+            text = "一" + text
+        parts.append(text + _BIG_UNITS[group])
+        missing_group = False
+    return "".join(parts)
 
 
 def _number_token_to_chinese(tok: str, prev: str, next_: str) -> str:
@@ -95,10 +108,17 @@ def normalize_text(text: str) -> str:
         start, end = m.start(), m.end()
         prev = text[start - 1] if start else ""
         nxt = text[end] if end < len(text) else ""
+        if tok.endswith("%"):
+            number = tok[:-1]
+            spoken = (_number_token_to_chinese(number, prev, nxt) if "." in number
+                      else num_to_chinese(int(number)))
+            return "百分之" + spoken
         return _number_token_to_chinese(tok, prev, nxt)
 
-    text = re.sub(r"\d+(?:\.\d+)?", repl, text)
-    # percent
+    text = re.sub(r"\d+(?:\.\d+)?%?", repl, text)
+    # Decimal points have now become 点; remaining periods end clauses.
+    text = text.replace(".", "。")
+    # Preserve the reading of a standalone percent sign.
     text = text.replace("%", "百分之")
     return text
 
@@ -417,7 +437,18 @@ def text_to_syllables(text: str) -> list[Syllable]:
             return
         local: list[Syllable] = []
         neutral_positions: list[tuple[int, str]] = []
+        chinese_run: list[Syllable] = []
         for ch, idx in buffer:
+            if ch.isascii() and ch.isalpha():
+                # Letters belong to the same prosodic phrase, but their names
+                # are not Chinese words eligible for 一/不/3+3 sandhi.
+                _apply_tone_sandhi(chinese_run)
+                chinese_run = []
+                for py in _LATIN[ch.lower()].split():
+                    local.append(Syllable(text=ch, pinyin=py, tone=1,
+                                          phonemes=pinyin_to_phonemes(py),
+                                          phrase=phrase))
+                continue
             got = ctx.get(idx) or _pinyin_for_char(ch)
             if not got:
                 continue
@@ -425,11 +456,12 @@ def text_to_syllables(text: str) -> list[Syllable]:
             ph = pinyin_to_phonemes(py)
             local.append(Syllable(text=ch, pinyin=py, tone=tone, phonemes=ph,
                                   phrase=phrase))
+            chinese_run.append(local[-1])
             if idx in neutral:
                 neutral_positions.append((len(local) - 1, ch))
         # Tone sandhi (一/不/3+3) is based on the lexical tones, before the
         # neutral-tone reduction is applied.
-        _apply_tone_sandhi(local)
+        _apply_tone_sandhi(chinese_run)
         for pos, ch in neutral_positions:
             s = local[pos]
             s.tone = 5
@@ -458,12 +490,7 @@ def text_to_syllables(text: str) -> list[Syllable]:
         elif "\u4e00" <= ch <= "\u9fff":
             buffer.append((ch, idx))
         elif ch.isascii() and ch.isalpha():
-            # English fragments: spell letters with Chinese syllables
-            py = _LATIN.get(ch.lower(), "a").split()[0]
-            syl = Syllable(text=ch, pinyin=py, tone=1,
-                           phonemes=pinyin_to_phonemes(py),
-                           stress=0.30, phrase=phrase)
-            syls.append(syl)
+            buffer.append((ch, idx))
         elif ch.isdigit():
             buffer.append((ch, idx))
     flush(0, final=True)

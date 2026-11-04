@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import random
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -97,16 +98,21 @@ class Song:
     def pitch_span(self) -> tuple[float, float]:
         if not self.notes:
             return (0.0, 0.0)
-        pp = self.controls.get("P", [])
-        vals: list[float] = []
+        # Build a fresh time index so each note visits only its own points.
+        # Keeping this local also allows callers to edit controls between reads.
+        pp = sorted(self.controls.get("P", []), key=lambda point: point[0])
+        times = [t for t, _ in pp]
+        lowest, highest = math.inf, -math.inf
         for n in self.notes:
-            se = [v * self.options.pbs / 8192 for t, v in pp
-                  if n.start <= t <= n.start + n.dur]
-            if se:
-                vals.extend(n.midi + x for x in se)
-        if not vals:
+            left = bisect_left(times, n.start)
+            right = bisect_right(times, n.start + n.dur)
+            for _, value in pp[left:right]:
+                pitch = n.midi + value * self.options.pbs / 8192
+                lowest = min(lowest, pitch)
+                highest = max(highest, pitch)
+        if lowest == math.inf:
             return (0.0, 0.0)
-        return (min(vals), max(vals))
+        return (lowest, highest)
 
 
 # ---------------------------------------------------------------------------
