@@ -316,6 +316,7 @@ class VocaloidTTSApp(tk.Tk):
         self._quitting = False
         self._busy = False
         self._cancel = False
+        self.recent: list[str] = []
         self._set_window_icon()
         self._close_hook = None
         self.bind("<<VocaloidTTSClose>>", lambda e: self._on_close())
@@ -763,6 +764,16 @@ class VocaloidTTSApp(tk.Tk):
             menu.add_command(
                 label=f"{meta['short']}  ·  {meta['extension']}",
                 command=lambda k=key: self.generate(fmt=k))
+        if self.recent:
+            menu.add_separator()
+            recent = tk.Menu(menu, tearoff=0, bg=CARD, fg=TEXT,
+                             activebackground=ACCENT, activeforeground="#08211f",
+                             relief="flat", bd=0, font=(FONT, 9))
+            for path in self.recent[:8]:
+                recent.add_command(
+                    label=Path(path).name,
+                    command=lambda p=path: self._open_recent(p))
+            menu.add_cascade(label="最近工程", menu=recent)
         try:
             x = self.btn_generate.winfo_rootx()
             y = self.btn_generate.winfo_rooty() + self.btn_generate.winfo_height() + 2
@@ -1472,6 +1483,7 @@ class VocaloidTTSApp(tk.Tk):
             pass
         self.status.set(f"已生成 {meta['short']}")
         self._log(f"已生成 {meta['short']}：{path}")
+        self._remember_recent(path)
         if fmt == "vsqx" and job_path:
             self._log(f"插件数据已刷新：{job_path}")
         elif fmt == "svip3":
@@ -1587,6 +1599,26 @@ class VocaloidTTSApp(tk.Tk):
             "之后即可在 任务(J) → 任务插件 中运行。",
         )
 
+    def _remember_recent(self, path: str) -> None:
+        try:
+            resolved = str(Path(path).resolve())
+        except Exception:
+            resolved = str(path)
+        self.recent = [p for p in self.recent if p != resolved]
+        self.recent.insert(0, resolved)
+        del self.recent[10:]
+
+    def _open_recent(self, path: str) -> None:
+        if not Path(path).is_file():
+            messagebox.showwarning("文件不存在", f"{path}\n\n可能已被移动或删除。")
+            self.recent = [p for p in self.recent if p != path]
+            return
+        try:
+            os.startfile(path)
+            self._log(f"已打开最近工程：{path}")
+        except Exception as exc:
+            messagebox.showerror("打开失败", str(exc))
+
     def open_output_folder(self) -> None:
         path = Path(self.last_path).parent if self.last_path else default_output_dir()
         try:
@@ -1632,6 +1664,7 @@ class VocaloidTTSApp(tk.Tk):
             "gender": self.sliders["gender"][0].get(),
             "seed": self.seed_var.get(),
             "voicebank_id": (bank.id if (bank := self._current_voicebank()) else ""),
+            "recent": self.recent[:10],
         }
         try:
             with open(self._settings_path(), "w", encoding="utf-8") as f:
@@ -1649,6 +1682,9 @@ class VocaloidTTSApp(tk.Tk):
         s = self.settings
         if not s:
             return
+        recent = s.get("recent")
+        if isinstance(recent, list):
+            self.recent = [str(p) for p in recent if isinstance(p, str)][:10]
         try:
             schema = int(s.get("schema", 1))
         except (TypeError, ValueError):
