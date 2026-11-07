@@ -1631,7 +1631,6 @@ class VocaloidTTSApp(tk.Tk):
             "vibrato": self.sliders["vibrato"][0].get(),
             "gender": self.sliders["gender"][0].get(),
             "seed": self.seed_var.get(),
-            "voicebank": self.vb_combo.current(),
             "voicebank_id": (bank.id if (bank := self._current_voicebank()) else ""),
         }
         try:
