@@ -16,7 +16,11 @@ import hashlib
 import json
 import os
 import re
-import winreg
+
+try:
+    import winreg
+except ImportError:  # non-Windows: registry scanning is a no-op
+    winreg = None  # type: ignore[assignment]
 from string import ascii_uppercase
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -307,6 +311,8 @@ def _make_bank(bid: str, name: str, vpath: str, source: str,
 
 
 def _scan_registry(seen: set[str], overrides: dict) -> list[Voicebank]:
+    if winreg is None:
+        return []
     found: list[Voicebank] = []
     roots = [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\VOCALOID4\DATABASE"),

@@ -10,12 +10,20 @@ import ctypes
 import os
 import subprocess
 import time
-from ctypes import wintypes
+
+try:
+    from ctypes import wintypes
+    _user32 = ctypes.windll.user32
+    _kernel32 = ctypes.windll.kernel32
+except (ImportError, AttributeError):  # non-Windows: importing must not fail
+    wintypes = None  # type: ignore[assignment]
+    _user32 = None
+    _kernel32 = None
 
 from .voicebank import get_v4_exe, get_v5_exe, v4_available, v5_available
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+user32 = _user32
+kernel32 = _kernel32
 WM_COMMAND = 0x0111
 WM_SETTEXT = 0x000C
 BM_CLICK = 0x00F5
@@ -24,7 +32,10 @@ VK_CONTROL = 0x11
 VK_O = 0x4F
 KEYEVENTF_KEYUP = 0x0002
 
-WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+if user32 is not None:
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+else:
+    WNDENUMPROC = None
 
 
 def _class_name(hwnd: int) -> str:

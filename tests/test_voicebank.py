@@ -136,6 +136,13 @@ class DetectVoicebanksTests(unittest.TestCase):
             from vocaloidtts.voicebank import detect_voicebanks
             self.assertEqual(detect_voicebanks(), [])
 
+    def test_registry_scan_is_noop_without_winreg(self) -> None:
+        from unittest.mock import patch
+
+        from vocaloidtts import voicebank
+        with patch.object(voicebank, "winreg", None):
+            self.assertEqual(voicebank._scan_registry(set(), {}), [])
+
 
 if __name__ == "__main__":
     unittest.main()
