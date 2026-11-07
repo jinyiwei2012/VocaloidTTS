@@ -342,14 +342,61 @@ def _scan_registry(seen: set[str], overrides: dict) -> list[Voicebank]:
     return found
 
 
-def _roots_path() -> Path:
+@dataclass
+class VoicebankRoot:
+    """One user-configured scan root, optionally overriding bank metadata."""
+
+    path: str
+    enabled: bool = True
+    bs: int | None = None
+    pc: int | None = None
+    display: str | None = None
+    version: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "VoicebankRoot":
+        return cls(
+            path=str(data.get("path", "")),
+            enabled=bool(data.get("enabled", True)),
+            bs=_int_or_none(data.get("bs")),
+            pc=_int_or_none(data.get("pc")),
+            display=(str(data["display"]) if data.get("display") else None),
+            version=(str(data["version"]) if data.get("version") else None),
+        )
+
+    def as_dict(self) -> dict:
+        out: dict = {"path": self.path, "enabled": self.enabled}
+        if self.bs is not None:
+            out["bs"] = self.bs
+        if self.pc is not None:
+            out["pc"] = self.pc
+        if self.display:
+            out["display"] = self.display
+        if self.version:
+            out["version"] = self.version
+        return out
+
+
+def _int_or_none(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _roots_json_path() -> Path:
+    return appdata_dir() / "voicebank_roots.json"
+
+
+def _roots_txt_path() -> Path:
     return appdata_dir() / "voicebank_roots.txt"
 
 
-def get_voicebank_roots() -> list[str]:
-    """User-added folders, persisted across launches."""
+def _read_legacy_roots() -> list[str]:
     try:
-        lines = _roots_path().read_text(encoding="utf-8").splitlines()
+        lines = _roots_txt_path().read_text(encoding="utf-8").splitlines()
     except Exception:
         return []
     out: list[str] = []
@@ -371,7 +418,56 @@ def get_voicebank_roots() -> list[str]:
     return out
 
 
-def add_voicebank_root(path: str | Path) -> str:
+def _load_scan_config() -> dict:
+    """Return ``{"schema", "scan", "roots"}``; migrate the legacy txt on first use."""
+    data = None
+    try:
+        loaded = json.loads(_roots_json_path().read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
+    except Exception:
+        data = None
+    if data is None:
+        data = {"schema": 1, "roots": [{"path": p} for p in _read_legacy_roots()]}
+    data.setdefault("schema", 1)
+    if not isinstance(data.get("scan"), dict):
+        data["scan"] = {}
+    if not isinstance(data.get("roots"), list):
+        data["roots"] = []
+    return data
+
+
+def save_scan_config(cfg: dict) -> Path:
+    path = _roots_json_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+    except Exception:
+        pass
+    return path
+
+
+def get_voicebank_roots() -> list[VoicebankRoot]:
+    """User-added folders with optional overrides, persisted across launches."""
+    out: list[VoicebankRoot] = []
+    seen: set[str] = set()
+    for item in _load_scan_config().get("roots", []):
+        if isinstance(item, str):
+            item = {"path": item}
+        if not isinstance(item, dict):
+            continue
+        root = VoicebankRoot.from_dict(item)
+        if not root.path or root.path.lower() in seen:
+            continue
+        seen.add(root.path.lower())
+        out.append(root)
+    return out
+
+
+def add_voicebank_root(path: str | Path, *, bs: int | None = None,
+                       pc: int | None = None, display: str | None = None,
+                       version: str | None = None) -> VoicebankRoot:
     p = Path(path).expanduser()
     if not p.is_dir():
         raise ValueError("请选择声库文件夹（不是文件）。")
@@ -379,16 +475,26 @@ def add_voicebank_root(path: str | Path) -> str:
         p = p.resolve()
     except Exception:
         pass
-    roots = get_voicebank_roots()
-    if str(p).lower() not in {r.lower() for r in roots}:
-        roots.append(str(p))
-        try:
-            f = _roots_path()
-            f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text("\n".join(roots) + "\n", encoding="utf-8")
-        except Exception:
-            pass
-    return str(p)
+    cfg = _load_scan_config()
+    roots = cfg.setdefault("roots", [])
+    key = str(p).lower()
+    for item in roots:
+        if isinstance(item, dict) and str(item.get("path", "")).lower() == key:
+            item["enabled"] = True
+            if bs is not None:
+                item["bs"] = bs
+            if pc is not None:
+                item["pc"] = pc
+            if display:
+                item["display"] = display
+            if version:
+                item["version"] = version
+            save_scan_config(cfg)
+            return VoicebankRoot.from_dict(item)
+    item = VoicebankRoot(str(p), True, bs, pc, display, version).as_dict()
+    roots.append(item)
+    save_scan_config(cfg)
+    return VoicebankRoot.from_dict(item)
 
 
 def remove_voicebank_root(path: str | Path) -> None:
@@ -396,11 +502,45 @@ def remove_voicebank_root(path: str | Path) -> None:
         target = str(Path(path).expanduser().resolve()).lower()
     except Exception:
         return
-    roots = [r for r in get_voicebank_roots() if r.lower() != target]
+    cfg = _load_scan_config()
+    cfg["roots"] = [
+        item for item in cfg.get("roots", [])
+        if not (isinstance(item, dict)
+                and str(item.get("path", "")).lower() == target)]
+    save_scan_config(cfg)
+
+
+def export_voicebank_roots(path: str | Path) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(_load_scan_config(), ensure_ascii=False, indent=2) + "\n",
+                      encoding="utf-8")
+    return target
+
+
+def import_voicebank_roots(path: str | Path) -> list[VoicebankRoot]:
     try:
-        _roots_path().write_text("\n".join(roots) + "\n", encoding="utf-8")
-    except Exception:
-        pass
+        loaded = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"无法读取点位文件：{exc}") from exc
+    incoming = loaded.get("roots") if isinstance(loaded, dict) else loaded
+    if not isinstance(incoming, list):
+        raise ValueError("点位文件格式不对：缺少 roots 列表。")
+    cfg = _load_scan_config()
+    existing = {str(item.get("path", "")).lower()
+                for item in cfg.get("roots", []) if isinstance(item, dict)}
+    for item in incoming:
+        if isinstance(item, str):
+            item = {"path": item}
+        if not isinstance(item, dict) or not item.get("path"):
+            continue
+        key = str(item["path"]).lower()
+        if key in existing:
+            continue
+        cfg.setdefault("roots", []).append(item)
+        existing.add(key)
+    save_scan_config(cfg)
+    return get_voicebank_roots()
 
 
 _SKIP_DIRS = {
@@ -410,7 +550,9 @@ _SKIP_DIRS = {
 
 
 def _scan_folder(root, seen: set[str], overrides: dict,
-                 source: str = "manual") -> list[Voicebank]:
+                 source: str = "manual", *,
+                 root_cfg: VoicebankRoot | None = None,
+                 max_depth: int = 8) -> list[Voicebank]:
     """Find every folder containing a .vvd under an arbitrary root."""
     try:
         root = Path(root)
@@ -425,7 +567,7 @@ def _scan_folder(root, seen: set[str], overrides: dict,
             depth = len(comp.relative_to(root).parts)
         except Exception:
             depth = 0
-        if depth >= 8:
+        if depth >= max(1, max_depth):
             dirnames[:] = []
             continue
         dirnames[:] = [d for d in dirnames
@@ -440,8 +582,18 @@ def _scan_folder(root, seen: set[str], overrides: dict,
             continue
         seen.add(bid)
         version = _detect_version(comp, filenames)
-        found.append(_make_bank(bid, name, str(comp.parent), source,
-                                overrides, version))
+        bank = _make_bank(bid, name, str(comp.parent), source,
+                          overrides, version)
+        if root_cfg is not None:
+            if root_cfg.bs is not None:
+                bank.bs = int(root_cfg.bs)
+            if root_cfg.pc is not None:
+                bank.pc = int(root_cfg.pc)
+            if root_cfg.display:
+                bank.display = str(root_cfg.display)
+            if root_cfg.version:
+                bank.version = str(root_cfg.version)
+        found.append(bank)
     return found
 
 
@@ -507,20 +659,33 @@ def _voice_db_roots() -> list[Path]:
     return out
 
 
-def _scan_filesystem(seen: set[str], overrides: dict) -> list[Voicebank]:
+def _scan_filesystem(seen: set[str], overrides: dict,
+                     max_depth: int = 8) -> list[Voicebank]:
     found: list[Voicebank] = []
     for root in _voice_db_roots():
-        found += _scan_folder(root, seen, overrides, "filesystem")
+        found += _scan_folder(root, seen, overrides, "filesystem",
+                              max_depth=max_depth)
     return found
 
 
 def detect_voicebanks() -> list[Voicebank]:
+    cfg = _load_scan_config()
+    scan = cfg.get("scan") or {}
+    full_scan = bool(scan.get("full_scan", True))
+    try:
+        max_depth = max(1, min(12, int(scan.get("max_depth", 8))))
+    except (TypeError, ValueError):
+        max_depth = 8
     overrides = _load_overrides()
     seen: set[str] = set()
     found = _scan_registry(seen, overrides)
-    found += _scan_filesystem(seen, overrides)
-    for root in get_voicebank_roots():
-        found += _scan_folder(root, seen, overrides, "custom")
+    if full_scan:
+        found += _scan_filesystem(seen, overrides, max_depth)
+    for root_cfg in get_voicebank_roots():
+        if not root_cfg.enabled:
+            continue
+        found += _scan_folder(root_cfg.path, seen, overrides, "custom",
+                              root_cfg=root_cfg, max_depth=max_depth)
     # LuoTianyi first, then other Chinese banks, then the rest
     def sort_key(v: Voicebank):
         d = v.display.lower()
