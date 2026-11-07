@@ -16,7 +16,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 from . import __version__
-from .paths import appdata_dir
+from .paths import appdata_dir, localappdata_dir
 from .prosody import STYLE_PRESETS, Song, VoiceOptions, compose
 from .tray import CloseHook, TrayIcon
 from .voicebank import (Voicebank, VoicebankRoot, add_voicebank_root,
@@ -825,11 +825,28 @@ class VocaloidTTSApp(tk.Tk):
 
     def _log(self, message: str) -> None:
         ts = time.strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        self._append_log_file(line)
         self.log.configure(state="normal")
-        self.log.insert("end", f"[{ts}] {message}\n")
+        self.log.insert("end", line + "\n")
         self.log.see("end")
         self.log.configure(state="disabled")
         self.status.set(message)
+
+    def _append_log_file(self, line: str) -> None:
+        """Mirror the in-app log to disk so failures leave a trace."""
+        try:
+            path = localappdata_dir() / "log.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if path.stat().st_size > 1_000_000:
+                    path.replace(path.with_name("log.old.txt"))
+            except OSError:
+                pass
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except Exception:
+            pass
 
     # -------------------------------------------------------- editor location
     def _check_editor_startup(self) -> None:
@@ -1612,66 +1629,92 @@ class VocaloidTTSApp(tk.Tk):
         except Exception:
             pass
 
+    def _safe_apply(self, label: str, func) -> None:
+        try:
+            func()
+        except Exception as exc:
+            self._log(f"设置项 {label} 恢复失败：{exc}")
+
     def _apply_settings(self) -> None:
         s = self.settings
         if not s:
             return
         try:
-            vb_id = s.get("voicebank_id")
-            if vb_id:
-                for i, vb in enumerate(self.voicebanks):
-                    if vb.id == vb_id:
-                        self.vb_combo.current(i)
-                        break
-            elif s.get("voicebank") is not None and 0 <= int(s["voicebank"]) < len(self.voicebanks):
-                self.vb_combo.current(int(s["voicebank"]))
-            self._update_bank_badge()
-            # v1 saved a much flatter tone; start v2 users on the new defaults
             schema = int(s.get("schema", 1))
-            if schema < 2:
-                return
-            if s.get("style") in STYLE_LABELS.values():
-                self.style_var.set(s["style"])
-            if "bpm" in s:
-                self.bpm_var.set(self._fmt_num(s["bpm"]))
-            if "numerator" in s:
-                self.num_var.set(str(s["numerator"]))
-            if "denominator" in s:
-                self.den_var.set(str(s["denominator"]))
-            if s.get("export_format") in FORMATS:
-                self.export_format = s["export_format"]
-            if s.get("editor_target") in ("V4", "V5"):
-                self.target_var.set(s["editor_target"])
-            for key in ("pitch", "tone2", "tone3", "tone4", "tone5", "rate",
-                        "tone", "energy", "pause", "breath", "vibrato", "gender"):
-                if key == "pitch" and schema < 4:
-                    # v1.5 redefines pitch as the first-tone anchor (G3 default)
-                    continue
-                if key in s and key in self.sliders:
-                    value = float(s[key])
-                    # v1.8 switches to V4's C3=60 octave labels and raises
-                    # the old low register by one octave.
-                    if schema < 6 and key in ("pitch", "tone2", "tone3", "tone4", "tone5") and value < 64:
-                        value += 12
-                    self.sliders[key][0].set(value)
-            if "seed" in s:
-                self.seed_var.set(str(s["seed"]))
-            if s.get("mode") in ("中文文本", "拼音输入"):
-                self.mode_var.set(s["mode"])
-                if self._mode() == "pinyin":
-                    self.hint_label.configure(
-                        text="空格分隔拼音，数字标声调：ni3 hao3 shi4 jie4；可用 ni3|n_i 覆盖音素。")
-                    # text content is not persisted, so start with a valid
-                    # pinyin sample instead of the Chinese default
-                    self._loading = True
-                    self.text.delete("1.0", "end")
-                    self.text.insert("1.0", PINYIN_PRESETS["自然朗读"][1])
-                    self.text.edit_modified(False)
-                    self._loading = False
-                    self.char_count.configure(text=f"{len(PINYIN_PRESETS['自然朗读'][1])} 字")
-            self._on_option_change()
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            schema = 1
+        self._safe_apply("声库", lambda: self._apply_voicebank_setting(s))
+        # v1 saved a much flatter tone; start v2 users on the new defaults
+        if schema < 2:
+            return
+        self._safe_apply("风格与速度", lambda: self._apply_transport_setting(s))
+        self._safe_apply("滑条", lambda: self._apply_slider_setting(s, schema))
+        self._safe_apply("种子", lambda: self._apply_seed_setting(s))
+        self._safe_apply("输入模式", lambda: self._apply_mode_setting(s))
+        self._safe_apply("界面刷新", self._on_option_change)
+
+    def _apply_voicebank_setting(self, s: dict) -> None:
+        vb_id = s.get("voicebank_id")
+        if vb_id:
+            for i, vb in enumerate(self.voicebanks):
+                if vb.id == vb_id:
+                    self.vb_combo.current(i)
+                    break
+        elif s.get("voicebank") is not None and 0 <= int(s["voicebank"]) < len(self.voicebanks):
+            self.vb_combo.current(int(s["voicebank"]))
+        self._update_bank_badge()
+
+    def _apply_transport_setting(self, s: dict) -> None:
+        if s.get("style") in STYLE_LABELS.values():
+            self.style_var.set(s["style"])
+        if "bpm" in s:
+            self.bpm_var.set(self._fmt_num(s["bpm"]))
+        if "numerator" in s:
+            self.num_var.set(str(s["numerator"]))
+        if "denominator" in s:
+            self.den_var.set(str(s["denominator"]))
+        if s.get("export_format") in FORMATS:
+            self.export_format = s["export_format"]
+        if s.get("editor_target") in ("V4", "V5"):
+            self.target_var.set(s["editor_target"])
+
+    def _apply_slider_setting(self, s: dict, schema: int) -> None:
+        for key in ("pitch", "tone2", "tone3", "tone4", "tone5", "rate",
+                    "tone", "energy", "pause", "breath", "vibrato", "gender"):
+            if key == "pitch" and schema < 4:
+                # v1.5 redefines pitch as the first-tone anchor (G3 default)
+                continue
+            if key in s and key in self.sliders:
+                value = float(s[key])
+                # v1.8 switches to V4's C3=60 octave labels and raises the
+                # old low register by one octave.
+                if schema < 6 and key in ("pitch", "tone2", "tone3", "tone4",
+                                          "tone5") and value < 64:
+                    value += 12
+                self.sliders[key][0].set(value)
+
+    def _apply_seed_setting(self, s: dict) -> None:
+        if "seed" in s:
+            self.seed_var.set(str(s["seed"]))
+
+    def _apply_mode_setting(self, s: dict) -> None:
+        if s.get("mode") not in ("中文文本", "拼音输入"):
+            return
+        self.mode_var.set(s["mode"])
+        if self._mode() != "pinyin":
+            return
+        self.hint_label.configure(
+            text="空格分隔拼音，数字标声调：ni3 hao3 shi4 jie4；可用 ni3|n_i 覆盖音素。")
+        # text content is not persisted, so start with a valid pinyin sample
+        # instead of the Chinese default
+        self._loading = True
+        try:
+            self.text.delete("1.0", "end")
+            self.text.insert("1.0", PINYIN_PRESETS["自然朗读"][1])
+            self.text.edit_modified(False)
+        finally:
+            self._loading = False
+        self.char_count.configure(text=f"{len(PINYIN_PRESETS['自然朗读'][1])} 字")
 
     def _on_close(self) -> None:
         if self._quitting:
