@@ -521,11 +521,6 @@ def detect_voicebanks() -> list[Voicebank]:
     found += _scan_filesystem(seen, overrides)
     for root in get_voicebank_roots():
         found += _scan_folder(root, seen, overrides, "custom")
-    if not found:
-        found.append(Voicebank("BK8H76TAEHXWSKDB", "LuoTianyi_CHN_Meng",
-                               "洛天依 CHN Meng", 4, 0,
-                               r"C:\Program Files (x86)\VoiceDB\LuoTianyiV4_CHN",
-                               "fallback"))
     # LuoTianyi first, then other Chinese banks, then the rest
     def sort_key(v: Voicebank):
         d = v.display.lower()

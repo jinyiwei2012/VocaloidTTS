@@ -126,5 +126,16 @@ class MatchKnownTests(unittest.TestCase):
             self.assertEqual(matched[0], 1, name)
 
 
+class DetectVoicebanksTests(unittest.TestCase):
+    def test_no_voicebanks_returns_empty_instead_of_placeholder(self) -> None:
+        from unittest.mock import patch
+
+        with patch("vocaloidtts.voicebank._scan_registry", return_value=[]), \
+                patch("vocaloidtts.voicebank._scan_filesystem", return_value=[]), \
+                patch("vocaloidtts.voicebank.get_voicebank_roots", return_value=[]):
+            from vocaloidtts.voicebank import detect_voicebanks
+            self.assertEqual(detect_voicebanks(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1124,7 +1124,11 @@ class VocaloidTTSApp(tk.Tk):
             messagebox.showwarning("没有文本", "请先输入要演唱的文字。")
             return False
         if not self.voicebanks:
-            messagebox.showerror("没有歌姬", "未检测到 VOCALOID4 声库。")
+            messagebox.showerror(
+                "没有歌姬",
+                "没有检测到可用的声库。\n\n"
+                "请点「歌姬」右侧的「＋ 添加文件夹」，选择声库根目录"
+                "（例如包含 .vvd 的文件夹）后再试。")
             return False
         return True
 
@@ -1143,7 +1147,9 @@ class VocaloidTTSApp(tk.Tk):
 
     def _update_bank_badge(self) -> None:
         if hasattr(self, "bank_pill"):
-            self.bank_pill.configure(text=self._bank_badge_text(self._current_voicebank()))
+            bank = self._current_voicebank()
+            text = self._bank_badge_text(bank) if bank else "  未检测到声库"
+            self.bank_pill.configure(text=text)
 
     def _refresh_voicebanks(self, select_id: str | None = None) -> None:
         old_id = select_id
@@ -1204,9 +1210,13 @@ class VocaloidTTSApp(tk.Tk):
     def _on_voicebank_change(self) -> None:
         vb = self._current_voicebank()
         self._update_bank_badge()
+        if vb is None:
+            return
         self._log(f"已选择声库：{vb.label}  (bs={vb.bs}, pc={vb.pc})")
 
-    def _current_voicebank(self) -> Voicebank:
+    def _current_voicebank(self) -> Voicebank | None:
+        if not self.voicebanks:
+            return None
         idx = self.vb_combo.current()
         if idx < 0 or idx >= len(self.voicebanks):
             idx = 0
@@ -1249,7 +1259,10 @@ class VocaloidTTSApp(tk.Tk):
             stamp = f"{datetime.now():%m-%d %H:%M}"
             title = f"VocaloidTTS Pinyin {stamp}" if mode == "pinyin" else f"VocaloidTTS {stamp}"
             if fmt == "vsqx":
-                path = write_vsqx(song, path, self._current_voicebank(), title=title)
+                bank = self._current_voicebank()
+                if bank is None:
+                    raise ValueError("没有可用的声库")
+                path = write_vsqx(song, path, bank, title=title)
                 self.last_job = write_job(song, default_job_path(), title=title)
             elif fmt == "svip3":
                 path = write_svip3(song, path)
@@ -1431,7 +1444,7 @@ class VocaloidTTSApp(tk.Tk):
             "gender": self.sliders["gender"][0].get(),
             "seed": self.seed_var.get(),
             "voicebank": self.vb_combo.current(),
-            "voicebank_id": self._current_voicebank().id,
+            "voicebank_id": (bank.id if (bank := self._current_voicebank()) else ""),
         }
         try:
             with open(self._settings_path(), "w", encoding="utf-8") as f:
@@ -1547,7 +1560,10 @@ def main() -> None:
             out = tmp / "VocaloidTTS_selftest.vsqx"
             song = compose("你好，世界。今天天气真不错！",
                            VoiceOptions(style="read", seed=42))
-            write_vsqx(song, out, detect_voicebanks()[0], title="VocaloidTTS Selftest")
+            banks = detect_voicebanks()
+            bank = banks[0] if banks else Voicebank(
+                "BK8H76TAEHXWSKDB", "LuoTianyi", "洛天依 · 中文 Meng", 4, 0)
+            write_vsqx(song, out, bank, title="VocaloidTTS Selftest")
             write_job(song, default_job_path(), title="VocaloidTTS Selftest")
             (tmp / "VocaloidTTS_selftest.ok").write_text(
                 f"ok {len(song.notes)} notes {out}\n", encoding="utf-8")
