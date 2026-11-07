@@ -24,6 +24,7 @@ from .voicebank import (Voicebank, add_voicebank_root, detect_voicebanks,
                         get_voicebank_roots, scan_voicebank_folder,
                         set_v4_exe, set_v5_exe, v4_available, v5_available)
 from .jobfile import default_job_path, write_job
+from .textio import decode_text
 from .vsqx import write_vsqx
 from .exporters import FORMATS, write_svip, write_svip3, write_ustx
 
@@ -1001,15 +1002,9 @@ class VocaloidTTSApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("无法读取文件", f"{p}\n\n{exc}")
             return
-        text = ""
-        for enc in ("utf-8-sig", "utf-16", "gb18030"):
-            try:
-                text = raw.decode(enc)
-                break
-            except Exception:
-                continue
+        text, encoding = decode_text(raw)
         if not text:
-            text = raw.decode("utf-8", errors="replace")
+            text, encoding = raw.decode("utf-8", errors="replace"), "utf-8 (replace)"
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         if len(text) > 200_000:
             text = text[:200_000]
@@ -1022,7 +1017,7 @@ class VocaloidTTSApp(tk.Tk):
         finally:
             self._loading = False
         self.char_count.configure(text=f"{len(text)} 字")
-        self._log(f"已导入文本：{p.name}（{len(text)} 字）")
+        self._log(f"已导入文本：{p.name}（{len(text)} 字，编码 {encoding}）")
 
     def _apply_preset(self, name: str) -> None:
         if self._mode() == "pinyin":
