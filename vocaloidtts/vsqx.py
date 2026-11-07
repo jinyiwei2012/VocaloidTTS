@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 from xml.sax.saxutils import escape
 
+from .atomicio import atomic_write_text
 from .prosody import Song
 from .voicebank import Voicebank
 
@@ -178,7 +179,5 @@ def write_vsqx(song: Song, path: str, voicebank: Voicebank,
 </vsq4>
 """
     path = os.path.abspath(path)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(xml)
+    atomic_write_text(path, xml)
     return path

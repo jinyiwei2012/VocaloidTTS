@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 from . import __version__
+from .atomicio import atomic_write_bytes, atomic_write_text
 from .prosody import Note, Song
 
 # X Studio 3 does not expose a public 洛天依 UUID in the OpenSVIP singer table.
@@ -257,8 +258,7 @@ def write_svip3(song: Song, path: str, singer_id: str = XSTUDIO_LUOTIANYI_ID) ->
         _pb_bool(12, True),
     ])
     path = str(Path(path).with_suffix(".svip3"))
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_bytes(project)
+    atomic_write_bytes(path, project)
     return path
 
 
@@ -385,8 +385,7 @@ def write_ustx(song: Song, path: str) -> str:
         lines.append("        ys: [" + ", ".join(str(y) for y in ys) + "]\n")
     lines.append("    maskedCurves: []\n")
     path = str(Path(path).with_suffix(".ustx"))
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text("".join(lines), encoding="utf-8", newline="\n")
+    atomic_write_text(path, "".join(lines))
     return path
 
 
@@ -463,7 +462,5 @@ def write_svip(song: Song, path: str) -> str:
         "duration": int(max(1, end)),
     }
     path = str(Path(path).with_suffix(".svip"))
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(project, ensure_ascii=False, indent=2) + "\n",
-                          encoding="utf-8", newline="\n")
+    atomic_write_text(path, json.dumps(project, ensure_ascii=False, indent=2) + "\n")
     return path

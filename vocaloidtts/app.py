@@ -1258,7 +1258,11 @@ class VocaloidTTSApp(tk.Tk):
                 if bank is None:
                     raise ValueError("没有可用的声库")
                 path = write_vsqx(song, path, bank, title=title)
-                self.last_job = write_job(song, default_job_path(), title=title)
+                try:
+                    self.last_job = write_job(song, default_job_path(), title=title)
+                except Exception as exc:
+                    self.last_job = None
+                    self._log(f"插件数据写入失败（工程已生成）：{exc}")
             elif fmt == "svip3":
                 path = write_svip3(song, path)
                 self.last_job = None
