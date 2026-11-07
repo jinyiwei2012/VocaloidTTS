@@ -348,7 +348,7 @@ class VocaloidTTSApp(tk.Tk):
             self._log(f"VOCALOID5：{get_v5_exe()}")
         if not v4_available() and not v5_available():
             self._log("未找到 VOCALOID4/5；生成 VSQX 仍可用，但载入编辑器需要路径。")
-            self.after(300, self._check_editor_startup)
+            # 启动时不再弹窗；用户点「载入 V4/V5」时再询问。
 
     def _set_window_icon(self) -> None:
         ico = resource_path("assets/vocaloidtts.ico")
@@ -1013,6 +1013,12 @@ class VocaloidTTSApp(tk.Tk):
             return
         path = paths[0]
         suffix = Path(path).suffix.lower()
+        if suffix in (".vsqx", ".svip3", ".ustx", ".svip"):
+            messagebox.showinfo(
+                "这是工程文件",
+                f"{Path(path).name} 是已经生成的工程。\n\n"
+                "请用对应的编辑器打开它；这里只能导入文本（.txt / .text / .md）。")
+            return
         if suffix not in (".txt", ".text", ".md"):
             messagebox.showwarning(
                 "不支持的文件",
