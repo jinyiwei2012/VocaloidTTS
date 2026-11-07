@@ -194,6 +194,13 @@ def _focus(hwnd: int) -> None:
 def _send_ctrl_o(hwnd: int) -> None:
     _focus(hwnd)
     time.sleep(0.2)
+    try:
+        # Only inject keys when our window really owns the foreground,
+        # otherwise Ctrl+O would hit whatever the user is typing in.
+        if int(user32.GetForegroundWindow()) != int(hwnd):
+            return
+    except Exception:
+        return
     user32.keybd_event(VK_CONTROL, 0, 0, 0)
     user32.keybd_event(VK_O, 0, 0, 0)
     user32.keybd_event(VK_O, 0, KEYEVENTF_KEYUP, 0)
