@@ -233,6 +233,8 @@ ni3|n_i hao3 shi4|s`_i` jie4|ts\_iE_r
 
 **管理点位**：点 **管理点位…** 可以查看已添加的目录、移除、编辑 `bs/pc` 覆盖，或导入/导出 JSON 清单。配置保存在 `%APPDATA%\VocaloidTTS\voicebank_roots.json`，旧的 `voicebank_roots.txt` 会在首次启动时自动迁移。
 
+**最近工程**：生成成功后会记录最近 10 个工程；`生成工程 ▼` 菜单底部的 **最近工程** 可以直接用默认程序重新打开。
+
 在「歌姬」下拉框里会看到：
 
 ```text
