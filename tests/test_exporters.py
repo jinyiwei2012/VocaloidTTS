@@ -8,9 +8,10 @@ import struct
 import tempfile
 import unittest
 
-from vocaloidtts.exporters import pit_cents, write_svip, write_svip3, write_ustx
+from vocaloidtts.exporters import (lyric_for, pit_cents, write_svip,
+                                   write_svip3, write_ustx)
 from vocaloidtts.pinyin import Syllable
-from vocaloidtts.prosody import Note, Song, VoiceOptions
+from vocaloidtts.prosody import Note, Song, VoiceOptions, compose
 
 
 def make_song(note_specs, points, *, pbs=12, bpm=120):
@@ -197,6 +198,21 @@ class ExporterTests(unittest.TestCase):
             with self.subTest(writer=writer.__name__):
                 with self.assertRaises(ValueError):
                     writer(make_song([], []), self.output)
+
+
+class LyricTests(unittest.TestCase):
+    def test_pinyin_lyrics_are_not_replaced_with_la(self):
+        song = compose("ni3 hao3", VoiceOptions(), input_mode="pinyin")
+        self.assertTrue(song.notes)
+        for note in song.notes:
+            self.assertNotEqual(lyric_for(note), "啦")
+            self.assertTrue(lyric_for(note).strip())
+
+    def test_chinese_lyrics_keep_the_character(self):
+        song = compose("你好", VoiceOptions())
+        self.assertTrue(song.notes)
+        for note in song.notes:
+            self.assertEqual(lyric_for(note), note.syl.text)
 
 
 if __name__ == "__main__":

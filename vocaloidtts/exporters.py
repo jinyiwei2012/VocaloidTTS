@@ -69,9 +69,15 @@ def _has_han(text: str) -> bool:
 
 
 def lyric_for(note: Note) -> str:
-    """X Studio wants a Chinese lyric; pinyin input falls back to 啦."""
+    """One lyric decision shared by every exporter.
+
+    Chinese input keeps the original character; pinyin input (no Han) keeps the
+    pinyin syllable, so a pinyin project does not turn every note into 啦.
+    """
     text = getattr(note.syl, "text", "") or ""
-    return text if _has_han(text) else "啦"
+    if _has_han(text):
+        return text
+    return note.lyric or text or "啦"
 
 
 def pronunciation_for(note: Note) -> str:
@@ -356,9 +362,7 @@ def write_ustx(song: Song, path: str) -> str:
         lines.append(f"      - position: {int(n.start)}\n")
         lines.append(f"        duration: {int(max(1, n.dur))}\n")
         lines.append(f"        tone: {int(n.midi)}\n")
-        lyric = getattr(n.syl, "text", "") or ""
-        if not _has_han(lyric):
-            lyric = n.lyric or "a"
+        lyric = lyric_for(n)
         lines.append(f"        lyric: {_yaml_str(lyric)}\n")
         lines.append("        pitch:\n          data:\n")
         for x, y in _ustx_pitch_points(song, n, pitch_index=pitch_index):
