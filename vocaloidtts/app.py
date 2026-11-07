@@ -1154,14 +1154,15 @@ class VocaloidTTSApp(tk.Tk):
             text = self._bank_badge_text(bank) if bank else "  未检测到声库"
             self.bank_pill.configure(text=text)
 
-    def _refresh_voicebanks(self, select_id: str | None = None) -> None:
+    def _refresh_voicebanks(self, select_id: str | None = None,
+                            force: bool = False) -> None:
         old_id = select_id
         if old_id is None and self.voicebanks:
             try:
                 old_id = self._current_voicebank().id
             except Exception:
                 old_id = None
-        banks = detect_voicebanks()
+        banks = detect_voicebanks(use_cache=not force)
         self.voicebanks = banks
         self.vb_combo["values"] = [v.label for v in banks]
         idx = 0
@@ -1178,7 +1179,7 @@ class VocaloidTTSApp(tk.Tk):
         self._log(f"声库扫描：{len(banks)} 个{extra}")
 
     def rescan_voicebanks(self) -> None:
-        self._refresh_voicebanks()
+        self._refresh_voicebanks(force=True)
         self.vb_note.configure(text="已重新扫描；找不到时点“＋ 添加文件夹”指定声库目录")
 
     def add_voicebank_folder(self) -> None:

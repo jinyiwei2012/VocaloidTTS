@@ -12,12 +12,13 @@ it stays fast even with multi-GB voicebanks.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import winreg
 from string import ascii_uppercase
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -668,8 +669,7 @@ def _scan_filesystem(seen: set[str], overrides: dict,
     return found
 
 
-def detect_voicebanks() -> list[Voicebank]:
-    cfg = _load_scan_config()
+def _collect_voicebanks(cfg: dict) -> list[Voicebank]:
     scan = cfg.get("scan") or {}
     full_scan = bool(scan.get("full_scan", True))
     try:
@@ -695,6 +695,60 @@ def detect_voicebanks() -> list[Voicebank]:
                 d)
     found.sort(key=sort_key)
     return found
+
+
+def _cache_path() -> Path:
+    return appdata_dir() / "voicebank_cache.json"
+
+
+def _cache_signature(cfg: dict) -> str:
+    parts = [json.dumps(cfg.get("scan") or {}, sort_keys=True)]
+    for item in cfg.get("roots", []):
+        if isinstance(item, str):
+            item = {"path": item}
+        path = str(item.get("path", ""))
+        try:
+            stat = Path(path).stat()
+            parts.append(f"{path}|{stat.st_mtime_ns}|{stat.st_size}")
+        except OSError:
+            parts.append(f"{path}|missing")
+        parts.append(json.dumps(item, sort_keys=True, ensure_ascii=False))
+    return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _read_cache() -> dict:
+    try:
+        data = json.loads(_cache_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_cache(signature: str, banks: list[Voicebank]) -> None:
+    try:
+        _cache_path().write_text(
+            json.dumps({"signature": signature,
+                        "banks": [asdict(bank) for bank in banks]},
+                       ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+    except Exception:
+        pass
+
+
+def detect_voicebanks(use_cache: bool = True) -> list[Voicebank]:
+    cfg = _load_scan_config()
+    if not use_cache:
+        return _collect_voicebanks(cfg)
+    signature = _cache_signature(cfg)
+    cached = _read_cache()
+    if cached.get("signature") == signature:
+        try:
+            return [Voicebank(**item) for item in cached.get("banks", [])]
+        except (TypeError, KeyError):
+            pass
+    banks = _collect_voicebanks(cfg)
+    _write_cache(signature, banks)
+    return banks
 
 
 def v4_available() -> bool:
