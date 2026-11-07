@@ -74,5 +74,15 @@ class ProsodyTests(unittest.TestCase):
         self.assertLess(points_per_second, 80)
 
 
+    def test_tone4_overshoot_is_soft_limited_not_clamped(self):
+        song = compose("大地上的人们都在看着这场戏剧，世界就在我们面前。",
+                       VoiceOptions(style="read", seed=1))
+        points = song.controls["P"]
+        self.assertTrue(points)
+        clamped = sum(1 for _, value in points if abs(value) >= 8192)
+        self.assertEqual(clamped, 0)
+        self.assertTrue(all(-8192 <= value <= 8191 for _, value in points))
+
+
 if __name__ == "__main__":
     unittest.main()

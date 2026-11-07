@@ -313,6 +313,15 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
 # Controllers
 # ---------------------------------------------------------------------------
 
+def _soft_limit(value: float, limit: float) -> float:
+    """Compress overshoot instead of clamping the curve flat at the VSQX edge."""
+    if abs(value) <= limit:
+        return value
+    sign = 1.0 if value > 0 else -1.0
+    extra = abs(value) - limit
+    return sign * (limit - 1.2 * (1.0 - math.exp(-extra / 1.2)))
+
+
 def _pitch_to_pit(samples: Iterable[tuple[int, float]],
                   notes: list[Note], opts: VoiceOptions) -> list[tuple[int, float]]:
     """Convert absolute-ish pitch samples to PIT offsets for per-tone notes.
@@ -327,7 +336,7 @@ def _pitch_to_pit(samples: Iterable[tuple[int, float]],
         while j + 1 < len(spans) and t >= spans[j][1]:
             j += 1
         offset = spans[j][2] if spans else 0
-        out.append((t, st - offset))
+        out.append((t, _soft_limit(st - offset, float(opts.pbs))))
     return out
 
 
