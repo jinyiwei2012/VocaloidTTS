@@ -72,6 +72,9 @@ def num_to_chinese(n: int) -> str:
     return "".join(parts)
 
 
+_UNIT_WORDS = set("元人个米吨次年月日号页条张件位名户家辆台套分时里克升斤岁倍份期届级层楼室排座项种类款批组队场轮票卡码")
+
+
 def _number_token_to_chinese(tok: str, prev: str, next_: str) -> str:
     """Read a run of digits in a natural way (years / phone / decimals)."""
     if "." in tok:
@@ -80,8 +83,10 @@ def _number_token_to_chinese(tok: str, prev: str, next_: str) -> str:
     if len(tok) == 4 and tok.startswith(("19", "20")) and next_ in ("年",):
         return "".join(_DIGITS[int(c)] for c in tok)
     if len(tok) >= 7 and not (prev and prev.isdigit()):
-        # phone / ID numbers are read digit by digit
-        return "".join(_DIGITS[int(c)] for c in tok)
+        # phone / ID numbers are read digit by digit, but a number followed by
+        # a unit or measure word (12345678元, 10000000人) reads as a number.
+        if not (next_ and next_ in _UNIT_WORDS):
+            return "".join(_DIGITS[int(c)] for c in tok)
     return num_to_chinese(int(tok))
 
 

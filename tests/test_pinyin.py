@@ -18,6 +18,13 @@ class NumberReadingTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertEqual(normalize_text(source), expected)
 
+    def test_long_numbers_with_units_read_as_numbers(self):
+        self.assertEqual(normalize_text("10000000人"), "一千万人")
+        self.assertIn("万", normalize_text("12345678元"))
+        # an 11-digit number without a unit is still read digit by digit
+        self.assertEqual(normalize_text("13800138000"),
+                         "一三八零零一三八零零零")
+
     def test_grouped_numbers_insert_zeros_without_dropping_one(self):
         for number, expected in (
             (0, "零"),
