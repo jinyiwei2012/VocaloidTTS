@@ -692,6 +692,10 @@ def _collect_voicebanks(cfg: dict) -> list[Voicebank]:
             continue
         found += _scan_folder(root_cfg.path, seen, overrides, "custom",
                               root_cfg=root_cfg, max_depth=max_depth)
+    sort_mode = str(scan.get("sort", "default")).lower()
+    if sort_mode == "name":
+        found.sort(key=lambda v: v.display.lower())
+        return found
     # LuoTianyi first, then other Chinese banks, then the rest
     def sort_key(v: Voicebank):
         d = v.display.lower()

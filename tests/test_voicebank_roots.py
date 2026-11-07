@@ -94,5 +94,37 @@ class RootConfigTests(unittest.TestCase):
             self.assertEqual(detect_voicebanks(), [])
 
 
+class SortModeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.appdata = base / "appdata"
+        self.appdata.mkdir()
+        self.lib = base / "lib"
+        self.lib.mkdir()
+        patcher = patch("vocaloidtts.voicebank.appdata_dir",
+                        return_value=self.appdata)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for comp_id, name in (("ZETA0000000000001", "Zeta"),
+                              ("ALPHA0000000000001", "Alpha")):
+            comp = self.lib / comp_id
+            comp.mkdir()
+            (comp / f"{name}.ddi").write_bytes(b"")
+            (comp / "_v4compatible.vvd").write_bytes(b"")
+
+    def test_sort_mode_name_orders_by_display(self) -> None:
+        from vocaloidtts.voicebank import VoicebankRoot, _collect_voicebanks
+        root = VoicebankRoot(str(self.lib))
+        with patch("vocaloidtts.voicebank._scan_registry", return_value=[]), \
+                patch("vocaloidtts.voicebank._scan_filesystem", return_value=[]), \
+                patch("vocaloidtts.voicebank.get_voicebank_roots",
+                      return_value=[root]):
+            found = _collect_voicebanks({"scan": {"sort": "name"}, "roots": []})
+        names = [bank.display.split(" · ")[0] for bank in found]
+        self.assertEqual(names, ["Alpha", "Zeta"])
+
+
 if __name__ == "__main__":
     unittest.main()
