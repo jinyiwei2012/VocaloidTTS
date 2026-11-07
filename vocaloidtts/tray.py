@@ -118,6 +118,7 @@ else:
             self._hwnd = 0
             self._hicon = 0
             self._nid = None
+            self._taskbar_msg = 0
             self._class_name = f"VocaloidTTSTray_{os.getpid()}"
             self._wndproc = WNDPROC(self._proc)
 
@@ -139,6 +140,11 @@ else:
 
         def _run(self) -> None:
             hinst = kernel32.GetModuleHandleW(None)
+            try:
+                self._taskbar_msg = int(
+                    user32.RegisterWindowMessageW("TaskbarCreated"))
+            except Exception:
+                self._taskbar_msg = 0
             wc = WNDCLASSW()
             wc.style = 0
             wc.lpfnWndProc = self._wndproc
@@ -203,6 +209,15 @@ else:
                         self._menu(hwnd)
                     elif code == WM_LBUTTONDBLCLK:
                         self._notify(self.on_show)
+                    return 0
+                if self._taskbar_msg and msg == self._taskbar_msg:
+                    # Explorer restarted: the icon must be added again or the
+                    # app becomes unreachable (the window is already hidden).
+                    if self._nid is not None:
+                        try:
+                            shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(self._nid))
+                        except Exception:
+                            pass
                     return 0
                 if msg == WM_CLOSE:
                     if self._nid is not None:
