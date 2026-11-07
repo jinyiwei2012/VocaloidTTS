@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import winreg
 from string import ascii_uppercase
 from dataclasses import dataclass
@@ -166,10 +167,15 @@ _KNOWN = [
     ("luka", (1, 0, "巡音流歌")),
     ("gumi", (1, 0, "GUMI")),
     ("ia_", (1, 0, "IA")),
+    ("miku v4 chinese", (4, 0, "初音未来 · 中文")),
+    ("miku_v4_chinese", (4, 0, "初音未来 · 中文")),
+    ("yan he", (4, 0, "言和 · 中文")),
+    ("moqingxian", (4, 0, "墨清弦")),
 ]
 
 _CHINESE_MARKERS = ("chn", "china", "chinese", "ling", "luo", "yuezheng",
-                    "yanhe", "xinhua", "xingchen", "tianyi", "中文")
+                    "yanhe", "xinhua", "xingchen", "tianyi", "中文",
+                    "yan_he", "moqingxian")
 _JAPANESE_MARKERS = ("jpn", "japan", "kaito", "miku", "luka", "gumi", "ia_",
                      "rin", "len", "meiko", "gakupo", "yukari", "kokone")
 
@@ -183,6 +189,7 @@ class Voicebank:
     pc: int = 0
     path: str = ""
     source: str = "registry"
+    version: str = "unknown"
 
     @property
     def label(self) -> str:
@@ -212,7 +219,17 @@ def _load_overrides() -> dict:
 
 
 def _match_known(name: str, path: str) -> tuple[int, int, str] | None:
+    """Map a bank name/path to ``(bs, pc, display)``.
+
+    Chinese markers win over vendor names: ``MIKU_V4_Chinese`` must resolve to
+    the Chinese bank (``bs=4``) even though ``miku`` alone means Japanese.
+    """
     key = f"{name} {path}".lower().replace("_", " ").replace("-", " ")
+    if any(marker in key for marker in _CHINESE_MARKERS):
+        for needle, vals in _KNOWN:
+            if needle in key and vals[0] == 4:
+                return vals
+        return 4, 0, name
     for needle, vals in _KNOWN:
         if needle in key:
             return vals
@@ -228,19 +245,64 @@ def _infer_unknown(name: str, path: str) -> tuple[int, int, str]:
     return 1, 0, name
 
 
+_VERSION_RE = re.compile(r"_V([345])(?:_|\s|$)", re.IGNORECASE)
+
+
+def _detect_version(comp: Path, filenames: list[str]) -> str:
+    """Best-effort V3/V4/V5 detection from EULA, path and component files."""
+    eula = comp / "EULA"
+    if eula.is_dir():
+        try:
+            for entry in eula.iterdir():
+                match = _VERSION_RE.search(entry.name)
+                if match:
+                    return "V" + match.group(1)
+        except OSError:
+            pass
+    low_path = str(comp).lower()
+    if "v3" in low_path:
+        return "V3"
+    if "v4" in low_path:
+        return "V4"
+    vvds = [f.lower() for f in filenames if f.lower().endswith(".vvd")]
+    if vvds and all(f.startswith("_v4compatible") for f in vvds):
+        return "V5"
+    for f in filenames:
+        low = f.lower()
+        if low.endswith((".ddb", ".ddi")) and "v4" in low:
+            return "V4"
+    return "unknown"
+
+
+def _pick_name(filenames: list[str]) -> str | None:
+    """Real-voice ``.vvd`` first, then ``.ddi``/``.ddb``; never the compat marker."""
+    groups = (
+        [f for f in filenames
+         if f.lower().endswith(".vvd") and not f.lower().startswith("_v4compatible")],
+        [f for f in filenames if f.lower().endswith(".ddi")],
+        [f for f in filenames if f.lower().endswith(".ddb")],
+    )
+    for group in groups:
+        if group:
+            return Path(sorted(group, key=lambda x: x.lower())[0]).stem
+    return None
+
+
 def _make_bank(bid: str, name: str, vpath: str, source: str,
-               overrides: dict) -> Voicebank:
+               overrides: dict, version: str = "unknown") -> Voicebank:
     ov = overrides.get(bid) or overrides.get(name) or {}
     known = _match_known(name, vpath)
     if known:
         bs, pc, pretty = known
     else:
         bs, pc, pretty = _infer_unknown(name, vpath)
+    if version != "unknown" and version not in pretty:
+        pretty = f"{pretty} · {version}"
     if isinstance(ov, dict):
         bs = int(ov.get("bs", bs))
         pc = int(ov.get("pc", pc))
         pretty = str(ov.get("display", pretty))
-    return Voicebank(bid, name, pretty, bs, pc, vpath, source)
+    return Voicebank(bid, name, pretty, bs, pc, vpath, source, version)
 
 
 def _scan_registry(seen: set[str], overrides: dict) -> list[Voicebank]:
@@ -368,15 +430,18 @@ def _scan_folder(root, seen: set[str], overrides: dict,
             continue
         dirnames[:] = [d for d in dirnames
                        if not d.startswith(".") and d.lower() not in _SKIP_DIRS]
-        vvds = [f for f in filenames if f.lower().endswith(".vvd")]
-        if not vvds:
+        if not any(f.lower().endswith(".vvd") for f in filenames):
+            continue
+        name = _pick_name(filenames)
+        if not name:
             continue
         bid = comp.name
         if bid in seen:
             continue
         seen.add(bid)
-        name = Path(sorted(vvds, key=lambda x: x.lower())[0]).stem
-        found.append(_make_bank(bid, name, str(comp.parent), source, overrides))
+        version = _detect_version(comp, filenames)
+        found.append(_make_bank(bid, name, str(comp.parent), source,
+                                overrides, version))
     return found
 
 
