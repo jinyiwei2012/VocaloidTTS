@@ -314,6 +314,8 @@ class VocaloidTTSApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._tray = None
         self._quitting = False
+        self._busy = False
+        self._cancel = False
         self._set_window_icon()
         self._close_hook = None
         self.bind("<<VocaloidTTSClose>>", lambda e: self._on_close())
@@ -1340,102 +1342,141 @@ class VocaloidTTSApp(tk.Tk):
         return self.voicebanks[idx]
 
     def generate(self, open_after: bool = False, silent: bool = False,
-                 fmt: str | None = None) -> str | None:
+                 fmt: str | None = None) -> None:
+        if getattr(self, "_busy", False):
+            self._log("上一次生成还没结束，请稍候。")
+            return
         if not self._validate():
-            return None
+            return
         fmt = "vsqx" if open_after else (fmt or self.export_format)
         if fmt not in FORMATS:
             fmt = "vsqx"
         meta = FORMATS[fmt]
-        try:
-            self.config(cursor="watch")
-            self.update_idletasks()
-            mode = self._mode()
-            song = compose(self.text.get("1.0", "end").strip(),
-                           self._voice_options(), bpm=self._bpm(),
-                           numerator=self._meter()[0],
-                           denominator=self._meter()[1], input_mode=mode)
-            if not song.notes:
-                raise ValueError("没有解析出可演唱的音节")
-            self.song = song
-            self.export_format = fmt
-            out_dir = default_output_dir()
-            prefix = meta["prefix"]
-            if fmt == "vsqx" and mode == "pinyin":
-                prefix = "VocaloidTTS_pinyin"
-            default = out_dir / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}{meta['extension']}"
-            path = filedialog.asksaveasfilename(
-                title=f"保存 {meta['short']} 工程",
-                initialdir=str(out_dir),
-                initialfile=default.name,
-                defaultextension=meta["extension"],
-                filetypes=[meta["filetype"], ("所有文件", "*.*")],
-            )
-            if not path:
-                return None
-            stamp = f"{datetime.now():%m-%d %H:%M}"
-            title = f"VocaloidTTS Pinyin {stamp}" if mode == "pinyin" else f"VocaloidTTS {stamp}"
-            if fmt == "vsqx":
-                bank = self._current_voicebank()
-                if bank is None:
-                    raise ValueError("没有可用的声库")
-                path = write_vsqx(song, path, bank, title=title)
-                try:
-                    self.last_job = write_job(song, default_job_path(), title=title)
-                except Exception as exc:
-                    self.last_job = None
-                    self._log(f"插件数据写入失败（工程已生成）：{exc}")
-            elif fmt == "svip3":
-                path = write_svip3(song, path)
-                self.last_job = None
-            elif fmt == "ustx":
-                path = write_ustx(song, path)
-                self.last_job = None
-            else:
-                path = write_svip(song, path)
-                self.last_job = None
-            self.last_path = path
-            self.path_label.configure(text=Path(path).name, fg=ACCENT)
-            self._update_stats()
-            self.stat_labels["size"].configure(text=f"{Path(path).stat().st_size/1024:.0f} KB")
+        mode = self._mode()
+        out_dir = default_output_dir()
+        prefix = meta["prefix"]
+        if fmt == "vsqx" and mode == "pinyin":
+            prefix = "VocaloidTTS_pinyin"
+        default = out_dir / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}{meta['extension']}"
+        path = filedialog.asksaveasfilename(
+            title=f"保存 {meta['short']} 工程",
+            initialdir=str(out_dir),
+            initialfile=default.name,
+            defaultextension=meta["extension"],
+            filetypes=[meta["filetype"], ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        bank = self._current_voicebank()
+        if fmt == "vsqx" and bank is None:
+            messagebox.showerror("没有歌姬", "请先添加声库。")
+            return
+        text = self.text.get("1.0", "end").strip()
+        options = self._voice_options()
+        bpm = self._bpm()
+        numerator, denominator = self._meter()
+        stamp = f"{datetime.now():%m-%d %H:%M}"
+        title = f"VocaloidTTS Pinyin {stamp}" if mode == "pinyin" else f"VocaloidTTS {stamp}"
+        self.export_format = fmt
+        self._busy = True
+        self._cancel = False
+        self.config(cursor="watch")
+        self.status.set(f"正在生成 {meta['short']}…")
+        self._log(f"开始生成 {meta['short']}：{Path(path).name}")
+
+        def worker() -> None:
             try:
-                self.info_hint.configure(
-                    text=f"已生成 {meta['short']}\n\n{Path(path).name}\n\n"
-                         f"{len(song.notes)} 音节 · {song.duration_s:.2f}s\n"
-                         f"{song.bpm:.0f} BPM · {song.numerator}/{song.denominator}",
-                    fg=ACCENT)
-            except Exception:
-                pass
-            self._log(f"已生成 {meta['short']}：{path}")
-            if fmt == "vsqx":
-                self._log(f"插件数据已刷新：{self.last_job}")
-            elif fmt == "svip3":
-                self._log("X Studio 歌手：洛天依（临时借用陈水若 ID，可在 X Studio 里改选歌手）")
-            elif fmt == "ustx":
-                self._log("OpenUTAU 歌手为占位符；打开工程后请选择实际声库。")
-            if not silent:
+                song = compose(text, options, bpm=bpm, numerator=numerator,
+                               denominator=denominator, input_mode=mode)
+                if self._cancel:
+                    self.after(0, lambda: self._finish_generate(None))
+                    return
+                if not song.notes:
+                    raise ValueError("没有解析出可演唱的音节")
+                job_path = None
+                written = path
                 if fmt == "vsqx":
-                    detail = ("V4 或 V5 中按 Ctrl+O 打开即可试听。\n"
-                              "PIT / DYN / BRI 等参数已写入。")
+                    written = write_vsqx(song, path, bank, title=title)
+                    try:
+                        job_path = write_job(song, default_job_path(), title=title)
+                    except Exception as exc:
+                        self._log(f"插件数据写入失败（工程已生成）：{exc}")
                 elif fmt == "svip3":
-                    detail = ("在 X Studio 3 中打开即可试听。\n"
-                              "歌手 ID 临时借用内置女声，轨道名保持“洛天依”。")
+                    written = write_svip3(song, path)
                 elif fmt == "ustx":
-                    detail = ("在 OpenUTAU 中打开，选择实际声库后即可试听。\n"
-                              "歌手字段是占位符，不会自动绑定声库。")
+                    written = write_ustx(song, path)
                 else:
-                    detail = "OpenSVIP JSON 工程，可交给 OpenSVIP 转换器继续处理。"
-                messagebox.showinfo(f"生成 {meta['short']} 成功",
-                                    f"已生成 {meta['short']} 工程：\n{path}\n\n{detail}")
-            if open_after:
-                self._open_in_v4(path)
-            return path
-        except Exception as exc:
-            messagebox.showerror("生成失败", f"{exc}\n\n{traceback.format_exc()}")
-            self._log(f"生成失败：{exc}")
-            return None
-        finally:
-            self.config(cursor="")
+                    written = write_svip(song, path)
+                payload = {"song": song, "path": written, "fmt": fmt,
+                           "meta": meta, "open_after": open_after,
+                           "silent": silent, "job_path": job_path}
+                self.after(0, lambda: self._finish_generate(payload))
+            except Exception as exc:
+                self.after(0, lambda e=exc: self._fail_generate(e))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_generate(self, payload: dict | None) -> None:
+        self._busy = False
+        self.config(cursor="")
+        if payload is None:
+            self.status.set("已取消")
+            self._log("生成已取消。")
+            return
+        song = payload["song"]
+        path = payload["path"]
+        fmt = payload["fmt"]
+        meta = payload["meta"]
+        job_path = payload["job_path"]
+        self.song = song
+        self.last_path = path
+        self.last_job = job_path
+        self.path_label.configure(text=Path(path).name, fg=ACCENT)
+        self._update_stats()
+        try:
+            self.stat_labels["size"].configure(
+                text=f"{Path(path).stat().st_size/1024:.0f} KB")
+        except Exception:
+            pass
+        try:
+            self.info_hint.configure(
+                text=f"已生成 {meta['short']}\n\n{Path(path).name}\n\n"
+                     f"{len(song.notes)} 音节 · {song.duration_s:.2f}s\n"
+                     f"{song.bpm:.0f} BPM · {song.numerator}/{song.denominator}",
+                fg=ACCENT)
+        except Exception:
+            pass
+        self.status.set(f"已生成 {meta['short']}")
+        self._log(f"已生成 {meta['short']}：{path}")
+        if fmt == "vsqx" and job_path:
+            self._log(f"插件数据已刷新：{job_path}")
+        elif fmt == "svip3":
+            self._log("X Studio 歌手：洛天依（临时借用陈水若 ID，可在 X Studio 里改选歌手）")
+        elif fmt == "ustx":
+            self._log("OpenUTAU 歌手为占位符；打开工程后请选择实际声库。")
+        if not payload["silent"]:
+            if fmt == "vsqx":
+                detail = ("V4 或 V5 中按 Ctrl+O 打开即可试听。\n"
+                          "PIT / DYN / BRI 等参数已写入。")
+            elif fmt == "svip3":
+                detail = ("在 X Studio 3 中打开即可试听。\n"
+                          "歌手 ID 临时借用内置女声，轨道名保持“洛天依”。")
+            elif fmt == "ustx":
+                detail = ("在 OpenUTAU 中打开，选择实际声库后即可试听。\n"
+                          "歌手字段是占位符，不会自动绑定声库。")
+            else:
+                detail = "OpenSVIP JSON 工程，可交给 OpenSVIP 转换器继续处理。"
+            messagebox.showinfo(f"生成 {meta['short']} 成功",
+                                f"已生成 {meta['short']} 工程：\n{path}\n\n{detail}")
+        if payload["open_after"]:
+            self._open_in_editor(path)
+
+    def _fail_generate(self, exc: Exception) -> None:
+        self._busy = False
+        self.config(cursor="")
+        self.status.set("生成失败")
+        messagebox.showerror("生成失败", f"{exc}\n\n{traceback.format_exc()}")
+        self._log(f"生成失败：{exc}")
 
     def generate_and_open(self) -> None:
         target = self._editor_target()
@@ -1452,9 +1493,7 @@ class VocaloidTTSApp(tk.Tk):
                     return
             else:
                 return
-        path = self.generate(open_after=False, silent=True, fmt="vsqx")
-        if path:
-            self._open_in_editor(path)
+        self.generate(open_after=True, silent=True, fmt="vsqx")
 
     def _open_in_editor(self, path: str) -> None:
         from .v4bridge import open_vsqx
