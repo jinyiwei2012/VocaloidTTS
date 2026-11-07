@@ -19,5 +19,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt ruff
       - run: python -B -m unittest discover -s tests -v
+      - run: ruff check vocaloidtts tests
+      - run: python VocaloidTTS.py --selftest
+      - name: Check selftest output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:TEMP\VocaloidTTS_selftest.ok")) {
+            throw "selftest did not produce an .ok file"
+          }
+          Get-Content "$env:TEMP\VocaloidTTS_selftest.ok"
