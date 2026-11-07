@@ -66,5 +66,13 @@ class ProsodyTests(unittest.TestCase):
         self.assertEqual(song.pitch_span, (0.0, 0.0))
 
 
+    def test_control_points_are_thinned_for_long_projects(self):
+        song = compose("ni3 hao3 shi4 jie4 " * 80, VoiceOptions(seed=1),
+                       input_mode="pinyin")
+        self.assertGreater(song.duration_s, 10)
+        points_per_second = len(song.controls["P"]) / song.duration_s
+        self.assertLess(points_per_second, 80)
+
+
 if __name__ == "__main__":
     unittest.main()

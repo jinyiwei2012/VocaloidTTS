@@ -339,7 +339,9 @@ def _ctrl_points(samples: Iterable[tuple[int, float]], pbs: int,
     for t, st in samples:
         v = int(round(st * 8192.0 / pbs))
         v = max(-8192, min(8191, v))
-        if t - last_t >= step or (last_v is not None and abs(v - last_v) >= 60):
+        # Keep a point when the time step elapsed, or when the curve moved by
+        # more than ~0.4 semitone (at pbs=12) since the last kept point.
+        if t - last_t >= step or (last_v is not None and abs(v - last_v) >= 400):
             pts.append((t, v))
             last_t = t
             last_v = v
@@ -481,8 +483,10 @@ def compose(text: str, options: VoiceOptions | None = None,
     controls["S"] = [(0, opts.pbs)]
     # 5 ms PIT control spacing: finer than 1.10 (10 ms), but the 40 ms
     # smoothing keeps the legato feel of the 1.10 timing model.
+    # The 5 ms grid defines the shape, but V4 interpolates linearly between
+    # control points, so ~20 ms points keep the curve and cut the file size.
     controls["P"] = _ctrl_points(_pitch_to_pit(pitch, notes, opts), opts.pbs,
-                                 step=max(2, int(round(5.0 * tpm))))
+                                 step=max(10, int(round(24.0 * tpm))))
     if not controls["P"]:
         controls["P"] = [(0, 0)]
     controls["DYN"] = _dyn_curve(notes, total_ticks, opts)
