@@ -1498,7 +1498,11 @@ class VocaloidTTSApp(tk.Tk):
         self._busy = False
         self.config(cursor="")
         self.status.set("生成失败")
-        messagebox.showerror("生成失败", f"{exc}\n\n{traceback.format_exc()}")
+        # A bad pinyin token is a user mistake, not a crash: show the message,
+        # keep the traceback for the log only.
+        detail = str(exc) if isinstance(exc, ValueError) else \
+            f"{exc}\n\n{traceback.format_exc()}"
+        messagebox.showerror("生成失败", detail)
         self._log(f"生成失败：{exc}")
 
     def generate_and_open(self) -> None:
