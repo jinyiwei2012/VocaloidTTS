@@ -244,6 +244,7 @@ class Syllable:
     tone: int
     phonemes: str
     pause_after_ms: int = 0
+    punct: str = ""
     stress: float = 0.0
     final: bool = False
     phrase: int = 0
@@ -434,11 +435,13 @@ def text_to_syllables(text: str) -> list[Syllable]:
     phrase = 0
     buffer: list[tuple[str, int]] = []
 
-    def flush(pause_ms: int, final: bool = False) -> None:
+    def flush(pause_ms: int, final: bool = False, punct: str = "") -> None:
         nonlocal buffer, phrase
         if not buffer:
             if pause_ms and syls:
                 syls[-1].pause_after_ms = max(syls[-1].pause_after_ms, pause_ms)
+                if punct:
+                    syls[-1].punct = punct
             return
         local: list[Syllable] = []
         neutral_positions: list[tuple[int, str]] = []
@@ -480,6 +483,8 @@ def text_to_syllables(text: str) -> list[Syllable]:
             _apply_stress(local, final, "char")
             if pause_ms:
                 local[-1].pause_after_ms = pause_ms
+            if punct:
+                local[-1].punct = punct
             syls.extend(local)
         buffer = []
         phrase += 1
@@ -487,9 +492,9 @@ def text_to_syllables(text: str) -> list[Syllable]:
     for idx, ch in enumerate(text):
         if ch in _CLAUSE_END:
             flush({"。": 420, "！": 380, "？": 400, "；": 280, "：": 260,
-                   "\n": 420}.get(ch, 350), final=True)
+                   "\n": 420}.get(ch, 350), final=True, punct=ch)
         elif ch in _COMMA:
-            flush(230, final=False)
+            flush(230, final=False, punct=ch)
         elif ch.isspace():
             flush(120, final=False)
         elif "\u4e00" <= ch <= "\u9fff":
@@ -572,11 +577,13 @@ def pinyin_text_to_syllables(text: str) -> list[Syllable]:
     phrase = 0
     buffer: list[str] = []
 
-    def flush(pause_ms: int, final: bool = False) -> None:
+    def flush(pause_ms: int, final: bool = False, punct: str = "") -> None:
         nonlocal buffer, phrase
         if not buffer:
             if pause_ms and syls:
                 syls[-1].pause_after_ms = max(syls[-1].pause_after_ms, pause_ms)
+                if punct:
+                    syls[-1].punct = punct
             return
         local: list[Syllable] = []
         for tok in buffer:
@@ -591,6 +598,8 @@ def pinyin_text_to_syllables(text: str) -> list[Syllable]:
         _apply_stress(local, final, "pinyin")
         if pause_ms:
             local[-1].pause_after_ms = pause_ms
+        if punct:
+            local[-1].punct = punct
         syls.extend(local)
         buffer = []
         phrase += 1
@@ -599,10 +608,10 @@ def pinyin_text_to_syllables(text: str) -> list[Syllable]:
     while i < len(text):
         ch = text[i]
         if ch in _PINYIN_CLAUSE:
-            flush(_PINYIN_PAUSE.get(ch, 350), final=True)
+            flush(_PINYIN_PAUSE.get(ch, 350), final=True, punct=ch)
             i += 1
         elif ch in _PINYIN_COMMA:
-            flush(230, final=False)
+            flush(230, final=False, punct=ch)
             i += 1
         elif ch.isspace():
             i += 1

@@ -74,6 +74,12 @@ class ProsodyTests(unittest.TestCase):
         self.assertLess(points_per_second, 80)
 
 
+    def test_punctuation_is_recorded_on_the_final_syllable(self):
+        song = compose("你好吗？", VoiceOptions())
+        self.assertEqual(song.notes[-1].syl.punct, "？")
+        song = compose("ni3 hao3 ma5?", VoiceOptions(), input_mode="pinyin")
+        self.assertEqual(song.notes[-1].syl.punct, "?")
+
     def test_tone4_overshoot_is_soft_limited_not_clamped(self):
         song = compose("大地上的人们都在看着这场戏剧，世界就在我们面前。",
                        VoiceOptions(style="read", seed=1))

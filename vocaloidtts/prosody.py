@@ -180,9 +180,14 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
     for pi, group in phrases.items():
         n = len(group)
         final = group[-1]
-        punct = final.pause_after_ms
-        is_q = punct == 400
-        is_excl = punct == 380
+        mark = getattr(final, "punct", "")
+        is_q = mark in ("？", "?")
+        is_excl = mark in ("！", "!")
+        if not mark:
+            # Hand-built songs have no punctuation metadata; fall back to the
+            # old pause-length heuristic.
+            is_q = final.pause_after_ms == 400
+            is_excl = final.pause_after_ms == 380
         ts = opts.tone_strength
         anchors_pitch = {
             1: opts.pitch,
