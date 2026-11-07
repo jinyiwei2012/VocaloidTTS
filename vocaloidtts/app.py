@@ -11,7 +11,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -19,9 +19,11 @@ from . import __version__
 from .paths import appdata_dir
 from .prosody import STYLE_PRESETS, Song, VoiceOptions, compose
 from .tray import CloseHook, TrayIcon
-from .voicebank import (Voicebank, add_voicebank_root, detect_voicebanks,
+from .voicebank import (Voicebank, VoicebankRoot, add_voicebank_root,
+                        detect_voicebanks, export_voicebank_roots,
                         get_jobplugin_dir, get_v4_exe, get_v5_exe,
-                        get_voicebank_roots, scan_voicebank_folder,
+                        get_voicebank_roots, import_voicebank_roots,
+                        remove_voicebank_root, scan_voicebank_folder,
                         set_v4_exe, set_v5_exe, v4_available, v5_available)
 from .jobfile import default_job_path, write_job
 from .textio import decode_text
@@ -337,7 +339,7 @@ class VocaloidTTSApp(tk.Tk):
         self._log("声库扫描：" + "、".join(v.display for v in self.voicebanks))
         custom_roots = get_voicebank_roots()
         if custom_roots:
-            self._log("自定义声库目录：" + "；".join(custom_roots))
+            self._log("自定义声库目录：" + "；".join(r.path for r in custom_roots))
         if v4_available():
             self._log(f"VOCALOID4：{get_v4_exe()}")
         if v5_available():
@@ -586,6 +588,12 @@ class VocaloidTTSApp(tk.Tk):
             relief="flat", bd=0, highlightthickness=0, cursor="hand2",
             font=(FONT, 8), padx=2, pady=0)
         self.vb_rescan_btn.pack(side="right", padx=(0, 8))
+        self.vb_manage_btn = tk.Button(
+            vb_head, text="管理点位…", command=self.manage_voicebank_roots,
+            bg=CARD, fg=MUTED, activebackground=CARD2, activeforeground=TEXT,
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            font=(FONT, 8), padx=2, pady=0)
+        self.vb_manage_btn.pack(side="right", padx=(0, 8))
         tk.Label(vb_head, text="启动时自动扫描", bg=CARD, fg="#5f6a7d",
                  font=(FONT, 7)).pack(side="right", padx=(0, 10))
         self.vb_var = tk.StringVar()
@@ -1201,6 +1209,119 @@ class VocaloidTTSApp(tk.Tk):
             messagebox.showinfo("已添加声库", f"发现并加入：\n{names}")
         else:
             messagebox.showinfo("目录已加入", "这些声库已经扫描到了，目录已保存。")
+
+    def manage_voicebank_roots(self) -> None:
+        win = tk.Toplevel(self)
+        win.title("声库扫描点位")
+        win.configure(bg=BG)
+        win.geometry("760x420")
+        win.transient(self)
+
+        tk.Label(win, text="已添加的声库目录（双击可编辑 bs/pc）", bg=BG, fg=TEXT,
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
+
+        body = tk.Frame(win, bg=BG)
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        scroll = tk.Scrollbar(body)
+        scroll.pack(side="right", fill="y")
+        listbox = tk.Listbox(body, bg=CARD, fg=TEXT, selectbackground=ACCENT,
+                             selectforeground="#08211f", font=(FONT, 9),
+                             yscrollcommand=scroll.set, bd=0, highlightthickness=0)
+        listbox.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=listbox.yview)
+
+        def refresh() -> None:
+            listbox.delete(0, "end")
+            for root in get_voicebank_roots():
+                bits = [root.path]
+                if root.bs is not None or root.pc is not None:
+                    bits.append(f"bs={root.bs if root.bs is not None else '?'}"
+                                f" pc={root.pc if root.pc is not None else '?'}")
+                if root.display:
+                    bits.append(f"显示={root.display}")
+                if not root.enabled:
+                    bits.append("（已禁用）")
+                listbox.insert("end", "  ·  ".join(bits))
+
+        def selected_root() -> VoicebankRoot | None:
+            sel = listbox.curselection()
+            if not sel:
+                return None
+            roots = get_voicebank_roots()
+            if sel[0] >= len(roots):
+                return None
+            return roots[sel[0]]
+
+        def remove() -> None:
+            root = selected_root()
+            if root is None:
+                return
+            remove_voicebank_root(root.path)
+            refresh()
+            self._refresh_voicebanks()
+            self._log(f"已移除扫描点位：{root.path}")
+
+        def edit() -> None:
+            root = selected_root()
+            if root is None:
+                return
+            current = ""
+            if root.bs is not None or root.pc is not None:
+                current = f"{root.bs if root.bs is not None else 0}," \
+                          f"{root.pc if root.pc is not None else 0}"
+            value = simpledialog.askstring(
+                "覆盖 bs/pc", "输入 bs,pc（例如 4,0）；留空表示自动推断：",
+                initialvalue=current, parent=win)
+            if value is None:
+                return
+            value = value.strip()
+            if value:
+                try:
+                    parts = value.replace("，", ",").split(",")
+                    bs, pc = int(parts[0]), int(parts[1])
+                except (ValueError, IndexError):
+                    messagebox.showerror("格式不对", "请输入 bs,pc，例如 4,0。",
+                                         parent=win)
+                    return
+                add_voicebank_root(root.path, bs=bs, pc=pc)
+            else:
+                add_voicebank_root(root.path)
+            refresh()
+            self._refresh_voicebanks()
+            self._log(f"已更新点位覆盖：{root.path}")
+
+        def export() -> None:
+            path = filedialog.asksaveasfilename(
+                parent=win, title="导出扫描点位", defaultextension=".json",
+                initialfile="voicebank_roots.json",
+                filetypes=[("JSON", "*.json"), ("所有文件", "*.*")])
+            if not path:
+                return
+            export_voicebank_roots(path)
+            self._log(f"已导出声库点位：{path}")
+
+        def import_() -> None:
+            path = filedialog.askopenfilename(
+                parent=win, title="导入扫描点位",
+                filetypes=[("JSON", "*.json"), ("所有文件", "*.*")])
+            if not path:
+                return
+            try:
+                import_voicebank_roots(path)
+            except ValueError as exc:
+                messagebox.showerror("导入失败", str(exc), parent=win)
+                return
+            refresh()
+            self._refresh_voicebanks()
+            self._log(f"已导入声库点位：{path}")
+
+        bar = tk.Frame(win, bg=BG)
+        bar.pack(fill="x", padx=14, pady=(0, 12))
+        for text, command in (("移除选中", remove), ("编辑 bs/pc", edit),
+                              ("导入…", import_), ("导出…", export)):
+            self._button(bar, text, command, "ghost", 8).pack(side="left", padx=(0, 8))
+        listbox.bind("<Double-Button-1>", lambda e: edit())
+        refresh()
 
     def _on_voicebank_change(self) -> None:
         vb = self._current_voicebank()
