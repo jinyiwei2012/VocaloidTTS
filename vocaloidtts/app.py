@@ -1140,8 +1140,9 @@ class VocaloidTTSApp(tk.Tk):
         self.stat_labels["dur"].configure(text=f"{song.duration_s:.2f}s")
         span = song.pitch_span
         self.stat_labels["range"].configure(text=f"{span[1]-span[0]:.1f} st")
-        top = max(song.notes, key=lambda n: n.midi)
-        self.stat_labels["peak"].configure(text=note_name(top.midi))
+        # Keep 最高音 consistent with 音域: both include the PIT curve, not
+        # just the note anchors.
+        self.stat_labels["peak"].configure(text=note_name(int(round(span[1]))))
         n5 = sum(1 for n in song.notes if n.syl.tone == 5)
         self.stat_labels["neutral"].configure(text=str(n5) if n5 else "—")
         self.stat_labels["size"].configure(text="—")
