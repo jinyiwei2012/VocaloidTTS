@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from .pinyin import Syllable, pinyin_text_to_syllables, text_to_syllables
+from .progress import Reporter
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +123,16 @@ class Song:
 _TONE_LEN = {1: 1.00, 2: 1.06, 3: 1.24, 4: 0.92, 5: 0.58}
 
 
-def _assign_timing(syls: list[Syllable], opts: VoiceOptions, tpm: float) -> None:
+def _assign_timing(syls: list[Syllable], opts: VoiceOptions, tpm: float,
+                   reporter: Reporter | None = None) -> None:
+    rep = reporter or Reporter()
     rng = random.Random(opts.seed)
     cursor = 0.0
-    for s in syls:
+    total = len(syls)
+    for i, s in enumerate(syls):
+        if (i & 0x3F) == 0:
+            rep.check()
+            rep.report("timing", 0.8 * i / total)
         base = 232.0 * _TONE_LEN.get(s.tone, 1.0) / max(0.55, opts.rate)
         accent = max(0.0, s.stress - 0.35)
         base *= 1.0 + 0.18 * accent * opts.tone_strength + rng.uniform(-0.06, 0.06)
@@ -138,13 +145,17 @@ def _assign_timing(syls: list[Syllable], opts: VoiceOptions, tpm: float) -> None
         cursor += s.dur_ms + s.pause_after_ms * opts.pause_scale
     # quantise to ticks, keeping gaps
     cursor_t = 0
-    for s in syls:
+    for i, s in enumerate(syls):
+        if (i & 0x3F) == 0:
+            rep.check()
+            rep.report("timing", 0.8 + 0.2 * i / total)
         dur = max(20, int(round(s.dur_ms * tpm)))
         pause = int(round(s.pause_after_ms * opts.pause_scale * tpm))
         s._start_tick = cursor_t  # type: ignore[attr-defined]
         s._dur_tick = dur          # type: ignore[attr-defined]
         s._pause_tick = pause      # type: ignore[attr-defined]
         cursor_t += dur + pause
+    rep.report("timing", 1.0, force=True)
 
 
 def ms_to_ticks(ms: float, bpm: float, resolution: int) -> float:
@@ -167,8 +178,10 @@ _TONE_CONTOURS = {
 
 
 def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
-                 tpm: float) -> list[tuple[int, float]]:
+                 tpm: float, reporter: Reporter | None = None
+                 ) -> list[tuple[int, float]]:
     """Continuous pitch track in ticks, with smooth transitions over gaps."""
+    rep = reporter or Reporter()
     rng = random.Random(opts.seed + 7)
     if not syls:
         return []
@@ -177,7 +190,11 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
         phrases.setdefault(s.phrase, []).append(s)
 
     anchors: dict[int, list[tuple[float, float]]] = {}
-    for pi, group in phrases.items():
+    total_phrases = len(phrases)
+    for done, (pi, group) in enumerate(phrases.items()):
+        if (done & 0x0F) == 0:
+            rep.check()
+            rep.report("pitch", 0.07 * done / total_phrases)
         n = len(group)
         final = group[-1]
         mark = getattr(final, "punct", "")
@@ -252,7 +269,13 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
     samples: list[tuple[int, float]] = []
     ptr = 0
     t = 0
+    sample_no = 0
+    span = max(1, total_ticks)
     while t <= total_ticks:
+        if (sample_no & 0x1FF) == 0:
+            rep.check()
+            rep.report("pitch", 0.07 + 0.46 * t / span)
+        sample_no += 1
         while ptr + 1 < len(syls) and t >= note_starts[ptr + 1]:
             ptr += 1
         s = syls[ptr]
@@ -299,7 +322,11 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
     # then smoothed over ~40 ms: more visual detail, but no sharp zig-zags.
     win = max(1, int(round(8.0)))
     out: list[tuple[int, float]] = []
+    sample_count = max(1, len(samples))
     for i, (tt, v) in enumerate(samples):
+        if (i & 0x1FF) == 0:
+            rep.check()
+            rep.report("pitch", 0.53 + 0.47 * i / sample_count)
         lo = max(0, i - win)
         hi = min(len(samples), i + win + 1)
         # triangular weights
@@ -310,6 +337,7 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
             num += samples[j][1] * w
             den += w
         out.append((tt, num / max(1e-9, den)))
+    rep.report("pitch", 1.0, force=True)
     return out
 
 
@@ -440,7 +468,9 @@ def _style_curve(song_notes: list[Note], total_ticks: int, opts: VoiceOptions,
 def compose(text: str, options: VoiceOptions | None = None,
             bpm: float = 120.0, resolution: int = 480,
             numerator: int = 4, denominator: int = 4,
-            input_mode: str = "chinese") -> Song:
+            input_mode: str = "chinese",
+            reporter: Reporter | None = None) -> Song:
+    rep = reporter or Reporter()
     opts = options or VoiceOptions()
     bpm = max(30.0, min(300.0, float(bpm)))
     resolution = max(96, min(1920, int(resolution)))
@@ -462,16 +492,26 @@ def compose(text: str, options: VoiceOptions | None = None,
     print_measure = max(1, int(round(resolution * 4 * numerator / denominator)))
     part_start = print_measure * 4
 
+    # Stage weights follow a 1078-syllable measurement: parse 6 %, timing 1 %,
+    # notes 5 %, pitch curve 75 %, PIT conversion 1 %, style curves 12 %.
+    # Keeping them close to the real cost makes the bar advance evenly instead
+    # of sitting still through the pitch curve and then jumping.  The note
+    # stage gets 5 % rather than its steady-state 1 %, because the first render
+    # in a process also pays for object allocation.
+    rep.stage("parse", 0.0)
     if input_mode == "pinyin":
-        syls = pinyin_text_to_syllables(text)
+        syls = pinyin_text_to_syllables(text, rep.child(0.0, 0.06))
     else:
-        syls = text_to_syllables(text)
+        syls = text_to_syllables(text, rep.child(0.0, 0.06))
+    rep.check()
     if not syls:
+        rep.report("done", 1.0, force=True)
         return Song([], {}, 0, part_start, [], opts, 0.0,
                     bpm, resolution, numerator, denominator)
 
     tpm = ms_to_ticks(1.0, bpm, resolution)
-    _assign_timing(syls, opts, tpm)
+    rep.stage("timing", 0.06)
+    _assign_timing(syls, opts, tpm, rep.child(0.06, 0.07))
     total_ticks = 0
     notes: list[Note] = []
     tone_anchor = {
@@ -481,7 +521,12 @@ def compose(text: str, options: VoiceOptions | None = None,
         4: opts.tone4_pitch,
         5: opts.tone5_pitch,
     }
-    for s in syls:
+    rep.stage("notes", 0.07)
+    total_syls = len(syls)
+    for i, s in enumerate(syls):
+        if (i & 0x3F) == 0:
+            rep.check()
+            rep.report("notes", 0.07 + 0.05 * i / total_syls)
         t0 = s._start_tick  # type: ignore[attr-defined]
         dur = s._dur_tick   # type: ignore[attr-defined]
         # Each tone gets its own note pitch, so V4's piano roll shows the
@@ -492,7 +537,10 @@ def compose(text: str, options: VoiceOptions | None = None,
         notes.append(Note(t0, dur, midi, s.pinyin, s.phonemes, s, velocity=vel))
         total_ticks = max(total_ticks, t0 + dur)
 
-    pitch = _pitch_curve(syls, opts, tpm)
+    rep.stage("pitch", 0.12)
+    pitch = _pitch_curve(syls, opts, tpm, rep.child(0.12, 0.87))
+    rep.check()
+    rep.stage("pit", 0.87)
     controls: dict[str, list[tuple[int, int]]] = {}
     controls["S"] = [(0, opts.pbs)]
     # 5 ms PIT control spacing: finer than 1.10 (10 ms), but the 40 ms
@@ -503,13 +551,21 @@ def compose(text: str, options: VoiceOptions | None = None,
                                  step=max(10, int(round(24.0 * tpm))))
     if not controls["P"]:
         controls["P"] = [(0, 0)]
+    rep.stage("curves", 0.88)
     controls["DYN"] = _dyn_curve(notes, total_ticks, opts)
+    rep.report("curves", 0.90)
     controls["BRE"] = _style_curve(notes, total_ticks, opts, "BRE")
+    rep.report("curves", 0.92)
     controls["BRI"] = _style_curve(notes, total_ticks, opts, "BRI")
+    rep.report("curves", 0.94)
     controls["CLE"] = _style_curve(notes, total_ticks, opts, "CLE")
+    rep.report("curves", 0.96)
     controls["OPE"] = _style_curve(notes, total_ticks, opts, "OPE")
+    rep.report("curves", 0.98)
     controls["GEN"] = _style_curve(notes, total_ticks, opts, "GEN")
+    rep.report("curves", 0.99)
     controls["POR"] = _style_curve(notes, total_ticks, opts, "POR")
     duration_s = total_ticks / resolution / bpm * 60.0
+    rep.report("done", 1.0, force=True)
     return Song(notes, controls, total_ticks, part_start, syls, opts, duration_s,
                 bpm, resolution, numerator, denominator)
