@@ -11,6 +11,7 @@ try:
 except Exception:  # pragma: no cover - pypinyin is bundled in the release build
     _pinyin = None
 
+from .edits import CharEdit, dictionary_overrides
 from .progress import Reporter
 
 
@@ -253,6 +254,8 @@ class Syllable:
     start_ms: float = 0.0
     dur_ms: float = 0.0
     index: int = 0
+    src: int = -1   # 源文本里的字符偏移，逐字纠音靠它定位
+    pause_lock: bool = False   # True 表示 pause_after_ms 是精确值，不再乘 pause_scale
 
 
 _CLAUSE_END = set("。！？；：\n")
@@ -442,18 +445,52 @@ def _context_pinyin(text: str,
     return out
 
 
+def _apply_char_edits(syls: list[Syllable], edits: dict[int, CharEdit],
+                      text: str) -> None:
+    """把逐字修正盖到已经算好的音节上。
+
+    在变调、轻声归并和重音分配之后调用，所以用户的显式设置总是最后生效。
+    ``CharEdit.char`` 用来兜底：文本被改过、偏移漂移时宁可跳过，也不错配。
+    """
+    for s in syls:
+        if s.src < 0:
+            continue
+        edit = edits.get(s.src)
+        if edit is None:
+            continue
+        if edit.char and (s.src >= len(text) or text[s.src] != edit.char):
+            continue
+        if edit.pinyin and is_valid_pinyin(edit.pinyin):
+            s.pinyin = edit.pinyin
+            s.phonemes = edit.phonemes or pinyin_to_phonemes(edit.pinyin)
+        elif edit.phonemes:
+            s.phonemes = edit.phonemes
+        if edit.tone:
+            s.tone = edit.tone
+        if edit.stress is not None:
+            s.stress = max(0.0, min(1.6, s.stress + edit.stress))
+
+
 def text_to_syllables(text: str,
-                      reporter: Reporter | None = None) -> list[Syllable]:
+                      reporter: Reporter | None = None,
+                      edits: dict[int, CharEdit] | None = None,
+                      dictionary: dict[str, str] | None = None
+                      ) -> list[Syllable]:
     """Parse Chinese text into a flat list of syllables, with pauses.
 
     ``reporter`` 收到的是「解析阶段内部进度」0..1，调用方用
     :meth:`Reporter.child` 把它映射到整条流水线的区间里。
+
+    ``edits`` 以字符偏移为键，覆盖单个字的拼音/声调；``dictionary`` 是用户
+    专名词典，命中后整词覆盖。优先级：逐字纠音 > 词典 > pypinyin 上下文。
     """
     rep = reporter or Reporter()
     rep.stage("parse", 0.0)
     text = normalize_text(text)
     rep.check()
     ctx = _context_pinyin(text, rep.child(0.0, 0.45))
+    if dictionary:
+        ctx.update(dictionary_overrides(text, dictionary))
     rep.check()
     neutral = _neutral_marks(text, rep.child(0.45, 0.6))
     total = len(text)
@@ -482,7 +519,7 @@ def text_to_syllables(text: str,
                 for py in _LATIN[ch.lower()].split():
                     local.append(Syllable(text=ch, pinyin=py, tone=1,
                                           phonemes=pinyin_to_phonemes(py),
-                                          phrase=phrase))
+                                          phrase=phrase, src=idx))
                 continue
             got = ctx.get(idx) or _pinyin_for_char(ch)
             if not got:
@@ -490,7 +527,7 @@ def text_to_syllables(text: str,
             py, tone = got
             ph = pinyin_to_phonemes(py)
             local.append(Syllable(text=ch, pinyin=py, tone=tone, phonemes=ph,
-                                  phrase=phrase))
+                                  phrase=phrase, src=idx))
             chinese_run.append(local[-1])
             if idx in neutral:
                 neutral_positions.append((len(local) - 1, ch))
@@ -508,6 +545,8 @@ def text_to_syllables(text: str,
             if final:
                 local[-1].final = True
             _apply_stress(local, final, "char")
+            if edits:
+                _apply_char_edits(local, edits, text)
             if pause_ms:
                 local[-1].pause_after_ms = pause_ms
             if punct:

@@ -24,6 +24,7 @@ _READING_RE = re.compile(r"([a-zA-ZüÜv:]+)([1-5])")
 class CharEdit:
     """一个字的人工修正。所有字段留空表示「不覆盖」。"""
 
+    char: str = ""            # 保存时那个字；应用前比对，防止偏移漂移后错配
     pinyin: str = ""          # 不带声调的拼音，如 "zhong"
     tone: int = 0             # 0 = 不覆盖，1..5
     phonemes: str = ""        # 直接覆盖 X-SAMPA；留空则按 pinyin 重算
@@ -39,6 +40,8 @@ class CharEdit:
 
     def to_dict(self) -> dict:
         out: dict = {}
+        if self.char:
+            out["char"] = self.char
         if self.pinyin:
             out["pinyin"] = self.pinyin
         if self.tone:
@@ -67,6 +70,7 @@ class CharEdit:
         pinyin = str(raw.get("pinyin") or "").strip().lower()
         tone = _num("tone", int) or 0
         return cls(
+            char=str(raw.get("char") or ""),
             pinyin=pinyin,
             tone=max(0, min(5, tone)),
             phonemes=str(raw.get("phonemes") or "").strip(),

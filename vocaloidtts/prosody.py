@@ -12,6 +12,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from .edits import CharEdit
 from .pinyin import Syllable, pinyin_text_to_syllables, text_to_syllables
 from .progress import Reporter
 
@@ -124,7 +125,8 @@ _TONE_LEN = {1: 1.00, 2: 1.06, 3: 1.24, 4: 0.92, 5: 0.58}
 
 
 def _assign_timing(syls: list[Syllable], opts: VoiceOptions, tpm: float,
-                   reporter: Reporter | None = None) -> None:
+                   reporter: Reporter | None = None,
+                   edits: dict[int, CharEdit] | None = None) -> None:
     rep = reporter or Reporter()
     rng = random.Random(opts.seed)
     cursor = 0.0
@@ -141,8 +143,18 @@ def _assign_timing(syls: list[Syllable], opts: VoiceOptions, tpm: float,
         if s.pause_after_ms:
             base *= 1.05
         s.dur_ms = max(95.0, min(680.0, base))
+        edit = edits.get(s.src) if edits else None
+        if edit is not None:
+            if edit.dur_scale is not None:
+                s.dur_ms = max(40.0, min(1600.0, s.dur_ms * edit.dur_scale))
+            if edit.pause_ms is not None:
+                # 精确停顿：不再受 pause_scale 影响
+                s.pause_after_ms = max(0, min(4000, int(edit.pause_ms)))
+                s.pause_lock = True
         s.start_ms = cursor
-        cursor += s.dur_ms + s.pause_after_ms * opts.pause_scale
+        pause = (s.pause_after_ms if s.pause_lock
+                 else s.pause_after_ms * opts.pause_scale)
+        cursor += s.dur_ms + pause
     # quantise to ticks, keeping gaps
     cursor_t = 0
     for i, s in enumerate(syls):
@@ -150,7 +162,9 @@ def _assign_timing(syls: list[Syllable], opts: VoiceOptions, tpm: float,
             rep.check()
             rep.report("timing", 0.8 + 0.2 * i / total)
         dur = max(20, int(round(s.dur_ms * tpm)))
-        pause = int(round(s.pause_after_ms * opts.pause_scale * tpm))
+        pause_ms = (s.pause_after_ms if s.pause_lock
+                    else s.pause_after_ms * opts.pause_scale)
+        pause = int(round(pause_ms * tpm))
         s._start_tick = cursor_t  # type: ignore[attr-defined]
         s._dur_tick = dur          # type: ignore[attr-defined]
         s._pause_tick = pause      # type: ignore[attr-defined]
@@ -469,7 +483,9 @@ def compose(text: str, options: VoiceOptions | None = None,
             bpm: float = 120.0, resolution: int = 480,
             numerator: int = 4, denominator: int = 4,
             input_mode: str = "chinese",
-            reporter: Reporter | None = None) -> Song:
+            reporter: Reporter | None = None,
+            edits: dict[int, CharEdit] | None = None,
+            dictionary: dict[str, str] | None = None) -> Song:
     rep = reporter or Reporter()
     opts = options or VoiceOptions()
     bpm = max(30.0, min(300.0, float(bpm)))
@@ -502,7 +518,8 @@ def compose(text: str, options: VoiceOptions | None = None,
     if input_mode == "pinyin":
         syls = pinyin_text_to_syllables(text, rep.child(0.0, 0.06))
     else:
-        syls = text_to_syllables(text, rep.child(0.0, 0.06))
+        syls = text_to_syllables(text, rep.child(0.0, 0.06),
+                                 edits=edits, dictionary=dictionary)
     rep.check()
     if not syls:
         rep.report("done", 1.0, force=True)
@@ -511,7 +528,7 @@ def compose(text: str, options: VoiceOptions | None = None,
 
     tpm = ms_to_ticks(1.0, bpm, resolution)
     rep.stage("timing", 0.06)
-    _assign_timing(syls, opts, tpm, rep.child(0.06, 0.07))
+    _assign_timing(syls, opts, tpm, rep.child(0.06, 0.07), edits=edits)
     total_ticks = 0
     notes: list[Note] = []
     tone_anchor = {

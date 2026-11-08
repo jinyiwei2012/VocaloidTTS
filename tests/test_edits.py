@@ -62,6 +62,14 @@ class CharEditTests(unittest.TestCase):
         self.assertTrue(CharEdit().is_empty())
         self.assertEqual(CharEdit.from_dict({}), CharEdit())
 
+    def test_char_guard_round_trips(self):
+        edit = CharEdit(char="中", pinyin="zhong", tone=1)
+        self.assertEqual(CharEdit.from_dict(edit.to_dict()), edit)
+
+    def test_char_alone_is_still_an_empty_edit(self):
+        # 只记住字、没改任何发音，不该占一个条目
+        self.assertTrue(CharEdit(char="中").is_empty())
+
     def test_from_dict_clamps_tone_and_ignores_junk(self):
         edit = CharEdit.from_dict({"tone": 99, "stress": "x", "dur_scale": 1.5})
         self.assertEqual(edit.tone, 5)

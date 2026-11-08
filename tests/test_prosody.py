@@ -1,6 +1,7 @@
 import unittest
 from dataclasses import replace
 
+from vocaloidtts.edits import CharEdit
 from vocaloidtts.progress import Cancelled, Reporter
 from vocaloidtts.prosody import STYLE_PRESETS, VoiceOptions, compose
 
@@ -128,6 +129,48 @@ class ComposeProgressTests(unittest.TestCase):
         quiet = compose("你好，世界！", VoiceOptions(seed=7),
                         reporter=Reporter())
         self.assertEqual(plain, quiet)
+
+
+class LocalEditTests(unittest.TestCase):
+    def test_duration_scale_lengthens_only_that_syllable(self):
+        plain = compose("你好世界", VoiceOptions(seed=5))
+        long = compose("你好世界", VoiceOptions(seed=5),
+                       edits={1: CharEdit(char="好", dur_scale=1.8)})
+        self.assertGreater(long.notes[1].dur, plain.notes[1].dur)
+        untouched = [(i, n.dur) for i, n in enumerate(long.notes) if i != 1]
+        expected = [(i, n.dur) for i, n in enumerate(plain.notes) if i != 1]
+        self.assertEqual(untouched, expected)
+
+    def test_exact_pause_is_not_scaled(self):
+        tight = compose("你好世界", VoiceOptions(seed=5, pause_scale=0.4),
+                        edits={1: CharEdit(char="好", pause_ms=300)})
+        loose = compose("你好世界", VoiceOptions(seed=5, pause_scale=1.8),
+                        edits={1: CharEdit(char="好", pause_ms=300)})
+
+        def gap(song):
+            first, second = song.notes[1], song.notes[2]
+            return second.start - (first.start + first.dur)
+
+        # 120 BPM / 480 PPQ 下 300 ms 正好 288 tick
+        self.assertEqual(gap(tight), 288)
+        self.assertEqual(gap(loose), 288)
+
+    def test_stress_delta_lifts_the_velocity(self):
+        plain = compose("你好世界", VoiceOptions(seed=5))
+        loud = compose("你好世界", VoiceOptions(seed=5),
+                       edits={0: CharEdit(char="你", stress=0.6)})
+        self.assertGreater(loud.notes[0].velocity, plain.notes[0].velocity)
+
+    def test_dictionary_reading_reaches_the_notes(self):
+        song = compose("重明", dictionary={"重明": "chong2 ming2"})
+        self.assertEqual([n.lyric for n in song.notes], ["chong", "ming"])
+
+    def test_edits_do_not_touch_neighbours(self):
+        plain = compose("大地上的人们", VoiceOptions(seed=5))
+        edited = compose("大地上的人们", VoiceOptions(seed=5),
+                         edits={3: CharEdit(char="人", pinyin="ren", tone=4)})
+        self.assertEqual([n.midi for n in edited.notes[:3]],
+                         [n.midi for n in plain.notes[:3]])
 
 
 if __name__ == "__main__":

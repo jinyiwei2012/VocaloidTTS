@@ -1,6 +1,7 @@
 """Regression coverage for text readings, order and phrase boundaries."""
 import unittest
 
+from vocaloidtts.edits import CharEdit
 from vocaloidtts.pinyin import (normalize_text, num_to_chinese,
                                 pinyin_text_to_syllables, text_to_syllables)
 from vocaloidtts.progress import Cancelled, Reporter
@@ -158,6 +159,70 @@ class ParseProgressTests(unittest.TestCase):
         with self.assertRaises(Cancelled):
             pinyin_text_to_syllables(
                 "ni3 hao3", reporter=Reporter(should_cancel=lambda: True))
+
+
+class CharEditTests(unittest.TestCase):
+    def test_edit_overrides_one_reading(self):
+        plain = text_to_syllables("中国人")
+        self.assertEqual([s.pinyin for s in plain], ["zhong", "guo", "ren"])
+        edited = text_to_syllables(
+            "中国人", edits={0: CharEdit(char="中", pinyin="chong", tone=2)})
+        self.assertEqual(edited[0].pinyin, "chong")
+        self.assertEqual(edited[0].tone, 2)
+        # 相邻的字不受影响
+        self.assertEqual([s.pinyin for s in edited[1:]], ["guo", "ren"])
+
+    def test_same_char_twice_only_the_edited_one_changes(self):
+        plain = text_to_syllables("你好你好")
+        syls = text_to_syllables(
+            "你好你好", edits={3: CharEdit(char="好", pinyin="hao", tone=4)})
+        self.assertEqual(syls[3].tone, 4)
+        # 前三个音节的读法保持自动结果，不受影响
+        self.assertEqual([s.tone for s in syls[:3]],
+                         [s.tone for s in plain[:3]])
+
+    def test_char_guard_skips_a_drifted_offset(self):
+        # 记的是「中」，但偏移 0 现在是「国」：宁可跳过也不错配
+        syls = text_to_syllables(
+            "国中国", edits={0: CharEdit(char="中", pinyin="zhong", tone=1)})
+        self.assertEqual(syls[0].pinyin, "guo")
+        self.assertEqual(syls[0].tone, 2)
+
+    def test_invalid_pinyin_keeps_the_reading_but_applies_the_tone(self):
+        syls = text_to_syllables(
+            "中国人", edits={0: CharEdit(char="中", pinyin="zzz", tone=4)})
+        self.assertEqual(syls[0].pinyin, "zhong")
+        self.assertEqual(syls[0].tone, 4)
+
+    def test_stress_delta_is_added(self):
+        base = text_to_syllables("你好")
+        edited = text_to_syllables(
+            "你好", edits={0: CharEdit(char="你", stress=0.5)})
+        self.assertGreater(edited[0].stress, base[0].stress)
+
+    def test_src_points_at_the_source_character(self):
+        syls = text_to_syllables("你好世界")
+        self.assertEqual([s.src for s in syls], [0, 1, 2, 3])
+
+
+class UserDictionaryTests(unittest.TestCase):
+    def test_dictionary_reading_wins_over_pypinyin(self):
+        syls = text_to_syllables("重明", dictionary={"重明": "chong2 ming2"})
+        self.assertEqual([s.pinyin for s in syls], ["chong", "ming"])
+        self.assertEqual([s.tone for s in syls], [2, 2])
+
+    def test_char_edit_beats_the_dictionary(self):
+        syls = text_to_syllables(
+            "重明",
+            dictionary={"重明": "chong2 ming2"},
+            edits={1: CharEdit(char="明", pinyin="ming", tone=1)})
+        self.assertEqual(syls[0].tone, 2)
+        self.assertEqual(syls[1].tone, 1)
+
+    def test_bad_entry_leaves_the_text_alone(self):
+        plain = text_to_syllables("重明")
+        bad = text_to_syllables("重明", dictionary={"重明": "chong ming"})
+        self.assertEqual([s.pinyin for s in plain], [s.pinyin for s in bad])
 
 
 if __name__ == "__main__":
