@@ -17,6 +17,7 @@ import tkinter.font as tkfont
 
 from . import __version__
 from .paths import appdata_dir, localappdata_dir
+from .progress import Cancelled, Reporter
 from .prosody import STYLE_PRESETS, Song, VoiceOptions, compose
 from .tray import CloseHook, TrayIcon
 from .voicebank import (Voicebank, VoicebankRoot, add_voicebank_root,
@@ -484,7 +485,8 @@ class VocaloidTTSApp(tk.Tk):
         bar.pack(fill="x", side="bottom")
         bar.pack_propagate(False)
         tk.Label(bar, textvariable=self.status, bg="#0e1117", fg=MUTED,
-                 font=(FONT, 8), anchor="w").pack(side="left", padx=22)
+                 font=(FONT, 8), anchor="w").pack(side="left", padx=(22, 10))
+        self._build_progress(bar)
         self.path_label = tk.Label(bar, text="", bg="#0e1117", fg="#5d6678",
                                    font=(FONT, 8), anchor="e")
         self.path_label.pack(side="right", padx=(0, 22))
@@ -511,6 +513,48 @@ class VocaloidTTSApp(tk.Tk):
         self._build_actions(right)
         self._build_preview(right)
         self._build_log(right)
+
+    def _build_progress(self, bar) -> None:
+        """状态栏里的进度条与取消按钮；只在生成期间显示。"""
+        self._progress_width = 150
+        self.progress_canvas = tk.Canvas(
+            bar, width=self._progress_width, height=6, bg="#1a1f2b",
+            highlightthickness=0, bd=0)
+        self._progress_rect = self.progress_canvas.create_rectangle(
+            0, 0, 0, 6, fill=ACCENT, width=0)
+        self.progress_pct = tk.Label(bar, text="", bg="#0e1117", fg="#7f8a9d",
+                                     font=(FONT, 8), width=4, anchor="w")
+        self.btn_cancel = tk.Label(bar, text="✕ 取消", bg="#0e1117", fg="#e06c75",
+                                   font=(FONT, 8), cursor="hand2")
+        self.btn_cancel.bind("<Button-1>", lambda e: self._request_cancel())
+        self._progress_widgets = (self.progress_canvas, self.progress_pct,
+                                  self.btn_cancel)
+
+    def _show_progress(self) -> None:
+        self.progress_canvas.pack(side="left", padx=(0, 6))
+        self.progress_pct.pack(side="left", padx=(0, 8))
+        self.btn_cancel.configure(text="✕ 取消", fg="#e06c75")
+        self.btn_cancel.pack(side="left")
+        self._set_progress(0.0)
+
+    def _hide_progress(self) -> None:
+        for widget in self._progress_widgets:
+            widget.pack_forget()
+
+    def _set_progress(self, fraction: float) -> None:
+        """只在主线程调用；worker 线程通过 after(0, ...) 转发过来。"""
+        fraction = 0.0 if fraction < 0.0 else 1.0 if fraction > 1.0 else fraction
+        self.progress_canvas.coords(self._progress_rect, 0, 0,
+                                    self._progress_width * fraction, 6)
+        self.progress_pct.configure(text=f"{fraction * 100:.0f}%")
+
+    def _request_cancel(self) -> None:
+        if not getattr(self, "_busy", False):
+            return
+        self._cancel = True
+        self.btn_cancel.configure(text="取消中…", fg="#8b93a7")
+        self.status.set("正在取消…")
+        self._log("已请求取消，等当前检查点停下。")
 
     def _card(self, parent, pad=14) -> tk.Frame:
         outer = tk.Frame(parent, bg=CARD, highlightbackground=LINE, highlightthickness=1)
@@ -1417,17 +1461,23 @@ class VocaloidTTSApp(tk.Tk):
         self._cancel = False
         self.config(cursor="watch")
         self.status.set(f"正在生成 {meta['short']}…")
+        self._show_progress()
         self._log(f"开始生成 {meta['short']}：{Path(path).name}")
+
+        # The callback hops back to the main thread; Reporter throttles it to
+        # about 20 updates a second, so the queue never piles up.
+        reporter = Reporter(
+            on_progress=lambda stage, frac: self.after(0, self._set_progress, frac),
+            should_cancel=lambda: self._cancel)
 
         def worker() -> None:
             try:
                 song = compose(text, options, bpm=bpm, numerator=numerator,
-                               denominator=denominator, input_mode=mode)
-                if self._cancel:
-                    self.after(0, lambda: self._finish_generate(None))
-                    return
+                               denominator=denominator, input_mode=mode,
+                               reporter=reporter.child(0.0, 0.88))
                 if not song.notes:
                     raise ValueError("没有解析出可演唱的音节")
+                reporter.stage("write", 0.90)
                 job_path = None
                 written = path
                 if fmt == "vsqx":
@@ -1435,17 +1485,21 @@ class VocaloidTTSApp(tk.Tk):
                     try:
                         job_path = write_job(song, default_job_path(), title=title)
                     except Exception as exc:
-                        self._log(f"插件数据写入失败（工程已生成）：{exc}")
+                        self.after(0, self._log,
+                                   f"插件数据写入失败（工程已生成）：{exc}")
                 elif fmt == "svip3":
                     written = write_svip3(song, path)
                 elif fmt == "ustx":
                     written = write_ustx(song, path)
                 else:
                     written = write_svip(song, path)
+                reporter.stage("write", 1.0)
                 payload = {"song": song, "path": written, "fmt": fmt,
                            "meta": meta, "open_after": open_after,
                            "silent": silent, "job_path": job_path}
                 self.after(0, lambda: self._finish_generate(payload))
+            except Cancelled:
+                self.after(0, lambda: self._finish_generate(None))
             except Exception as exc:
                 self.after(0, lambda e=exc: self._fail_generate(e))
 
@@ -1454,6 +1508,7 @@ class VocaloidTTSApp(tk.Tk):
     def _finish_generate(self, payload: dict | None) -> None:
         self._busy = False
         self.config(cursor="")
+        self._hide_progress()
         if payload is None:
             self.status.set("已取消")
             self._log("生成已取消。")
@@ -1510,6 +1565,7 @@ class VocaloidTTSApp(tk.Tk):
     def _fail_generate(self, exc: Exception) -> None:
         self._busy = False
         self.config(cursor="")
+        self._hide_progress()
         self.status.set("生成失败")
         # A bad pinyin token is a user mistake, not a crash: show the message,
         # keep the traceback for the log only.
