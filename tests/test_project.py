@@ -100,5 +100,24 @@ class ProjectFileTests(unittest.TestCase):
             load_project(self.path)
 
 
+    def test_non_project_json_is_rejected(self):
+        # 选中 userdict.json 之类的任意 JSON 时，不能得到一个空项目把文本清空
+        self.path.write_text(json.dumps({"words": {"a": "b"}}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            load_project(self.path)
+
+    def test_missing_app_header_but_project_fields_is_accepted(self):
+        # 手写的项目文件可能没有 app 字段，只要有 text/edits 就认
+        self.path.write_text(json.dumps({"text": "你好"}), encoding="utf-8")
+        self.assertEqual(load_project(self.path).text, "你好")
+
+    def test_overflowing_option_is_dropped(self):
+        project = Project.from_dict({"options": {"pitch": float("inf")}})
+        self.assertEqual(project.options.pitch, VoiceOptions().pitch)
+
+    def test_non_string_text_becomes_empty(self):
+        self.assertEqual(Project.from_dict({"text": {"a": 1}}).text, "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -69,7 +69,7 @@ class Project:
                         kwargs[key] = str(value)
                     else:
                         kwargs[key] = value
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
         options = VoiceOptions(**kwargs)
 
@@ -80,11 +80,12 @@ class Project:
         def _num(key: str, default, cast):
             try:
                 return cast(raw.get(key, default))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return default
 
+        text_raw = raw.get("text")
         return cls(
-            text=str(raw.get("text") or ""),
+            text=text_raw if isinstance(text_raw, str) else "",
             mode="pinyin" if raw.get("mode") == "pinyin" else "chinese",
             bpm=_num("bpm", 120.0, float),
             numerator=_num("numerator", 4, int),
@@ -107,4 +108,10 @@ def load_project(path: Path) -> Project:
         raise ValueError(f"读不到项目文件：{exc}") from exc
     except ValueError as exc:
         raise ValueError(f"项目文件不是合法 JSON：{exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("项目文件不是 JSON 对象")
+    # 任何 JSON 都能塞进来；没有我们的标记、也没有项目字段的，直接拒掉，
+    # 否则「打开项目」选中 userdict.json 会得到一个空项目，把当前文本清空。
+    if raw.get("app") != "VocaloidTTS" and not ({"text", "edits"} & set(raw)):
+        raise ValueError("这不是 VocaloidTTS 项目文件")
     return Project.from_dict(raw)

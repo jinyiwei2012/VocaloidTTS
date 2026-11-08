@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from xml.sax.saxutils import escape
 
 from .atomicio import atomic_write_text
 from .prosody import Song

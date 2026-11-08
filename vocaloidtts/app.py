@@ -18,7 +18,7 @@ from . import __version__
 from .edits import (CharEdit, EditSet, load_userdict, parse_reading,
                     save_userdict)
 from .paths import appdata_dir, localappdata_dir
-from .pinyin import char_readings
+from .pinyin import char_readings, is_valid_pinyin
 from .progress import Cancelled, Reporter
 from .project import SUFFIX, Project, load_project, save_project
 from .prosody import STYLE_PRESETS, Song, VoiceOptions, compose
@@ -471,7 +471,8 @@ class VocaloidTTSApp(tk.Tk):
                 pass
             self._close_hook = None
         # 退出时把还在排队的自动保存取消掉，否则 destroy 之后它还会触发，
-        # Tk 会报 invalid command name。
+        # Tk 会报 invalid command name。取消之前先落盘一次：2.5 秒 debounce
+        # 窗口里改的内容否则会丢。
         job = getattr(self, "_autosave_job", None)
         if job is not None:
             try:
@@ -479,6 +480,10 @@ class VocaloidTTSApp(tk.Tk):
             except Exception:
                 pass
             self._autosave_job = None
+        try:
+            self._autosave_now()
+        except Exception:
+            pass
         try:
             self.destroy()
         except Exception:
@@ -939,6 +944,9 @@ class VocaloidTTSApp(tk.Tk):
 
     def preview_pitch(self) -> None:
         """按当前文本与参数算一次音高，画在预览区。"""
+        if getattr(self, "_busy", False):
+            messagebox.showinfo("预览音高", "正在生成工程，等它跑完再预览。")
+            return
         if getattr(self, "_previewing", False):
             self._log("音高分析还在跑，稍等一下。")
             return
@@ -1326,7 +1334,7 @@ class VocaloidTTSApp(tk.Tk):
         self.char_count.configure(text=f"{len(content)} 字")
         if self.edits.chars and not self.edits.matches(
                 self.text.get("1.0", "end-1c")):
-            self._log("文本已改动，之前的逐字纠音对不上了，生成时会被忽略。")
+            self._log("文本已改动，逐字纠音会在生成时按字符位置重新核对。")
         self._schedule_autosave()
 
     # ------------------------------------------------------ 逐字纠音
@@ -1376,6 +1384,12 @@ class VocaloidTTSApp(tk.Tk):
         win.configure(bg=BG)
         win.transient(self)
         win.resizable(False, False)
+        # 模态：对话框开着的时候不能让用户继续改主输入框，否则 apply 会按
+        # 打开时的旧偏移写入，而 take_snapshot 又把「文本已改」这件事抹掉。
+        try:
+            win.grab_set()
+        except Exception:
+            pass
 
         tk.Label(win, text="拼音留空 = 保持自动读音；其余留「自动」= 跟规则走",
                  bg=BG, fg=MUTED, font=(FONT, 9)).pack(anchor="w", padx=14,
@@ -1431,6 +1445,13 @@ class VocaloidTTSApp(tk.Tk):
             for (offset, ch, py_var, tone_var, stress_var, dur_var, pause_var,
                  auto_py, auto_tone) in rows:
                 pinyin = py_var.get().strip().lower()
+                if pinyin and not is_valid_pinyin(pinyin):
+                    messagebox.showerror(
+                        "拼音不对",
+                        f"「{ch}」的拼音「{pinyin}」不是合法拼音。\n"
+                        "只写字母，例如 zhong；声调用右边的下拉框。",
+                        parent=win)
+                    return
                 label = tone_var.get()
                 tone = 0 if label == "自动" else (5 if label == "轻声" else int(label))
                 edit = CharEdit(
@@ -1520,7 +1541,7 @@ class VocaloidTTSApp(tk.Tk):
             sel = listbox.curselection()
             if not sel:
                 return
-            word = sorted(self.dictionary)[sel[0]]
+            word = listbox.get(sel[0]).split("  →  ")[0]
             self.dictionary.pop(word, None)
             self._save_dictionary()
             refresh()
@@ -1687,7 +1708,16 @@ class VocaloidTTSApp(tk.Tk):
 
         启动时扫描还没回来，所以选择要等扫描结束后再恢复一次。
         """
-        if not self.voicebanks or not hasattr(self, "vb_combo"):
+        if not hasattr(self, "vb_combo"):
+            return
+        if not self.voicebanks:
+            # 声库被全部移除后，下拉框不能继续显示上一次的名字
+            try:
+                self.vb_var.set("")
+                self.vb_combo.set("")
+            except Exception:
+                pass
+            self._update_bank_badge()
             return
         idx: int | None = None
         if self._want_bank_id:
@@ -1744,7 +1774,12 @@ class VocaloidTTSApp(tk.Tk):
                 "请选择 VoiceDB、歌姬库根目录，或包含声库的上级文件夹。")
             return
         before = {vb.id for vb in self.voicebanks}
-        add_voicebank_root(path)
+        try:
+            add_voicebank_root(path)
+        except Exception as exc:
+            self._log(f"保存声库目录失败：{exc}")
+            messagebox.showerror("保存失败", str(exc))
+            return
         new = [vb for vb in found if vb.id not in before]
         self._refresh_voicebanks(select_id=(new[0].id if new else None))
         if new:
@@ -1946,6 +1981,8 @@ class VocaloidTTSApp(tk.Tk):
                 if not song.notes:
                     raise ValueError("没有解析出可演唱的音节")
                 reporter.stage("write", 0.90)
+                # 写文件前再查一次：用户可能在 88% 处刚点了取消
+                reporter.check()
                 job_path = None
                 written = path
                 if fmt == "vsqx":
@@ -2069,6 +2106,7 @@ class VocaloidTTSApp(tk.Tk):
         from .v4bridge import open_vsqx
         target = self._editor_target()
         label = "VOCALOID5" if target == "v5" else "VOCALOID4"
+        self._opening_path = path
         self._log(f"正在连接 {label}…")
         self.status.set(f"正在连接 {label}…")
 
@@ -2087,7 +2125,7 @@ class VocaloidTTSApp(tk.Tk):
             return
         self._log(f"载入失败：{msg}")
         self.status.set("载入失败")
-        path = self.last_path
+        path = getattr(self, "_opening_path", None) or self.last_path
         if not path:
             messagebox.showwarning("载入失败", msg)
             return
@@ -2189,7 +2227,14 @@ class VocaloidTTSApp(tk.Tk):
         finally:
             self._loading = False
         self.char_count.configure(text=f"{len(project.text.strip())} 字")
+        # 清掉撤销栈：否则 Ctrl+Z 会把文本退回上一个工程，而 edits 已经是
+        # 新工程的，偏移整体错配。
+        try:
+            self.text.edit_reset()
+        except Exception:
+            pass
         self.mode_var.set("拼音输入" if project.mode == "pinyin" else "中文文本")
+        self._on_mode_change()
         self.bpm_var.set(self._fmt_num(project.bpm))
         self.num_var.set(str(project.numerator))
         self.den_var.set(str(project.denominator))
@@ -2252,6 +2297,10 @@ class VocaloidTTSApp(tk.Tk):
             project = load_project(Path(path))
         except ValueError as exc:
             messagebox.showerror("打开失败", str(exc))
+            return
+        if self.text.get("1.0", "end-1c").strip() and not messagebox.askyesno(
+                "打开项目",
+                f"当前内容会被替换成：\n{Path(path).name}\n\n继续吗？"):
             return
         self._apply_project(project)
         self.project_path = path

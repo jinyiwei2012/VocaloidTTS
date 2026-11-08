@@ -17,7 +17,7 @@ from pathlib import Path
 from .atomicio import atomic_write_text
 
 #: 词条读音里的单个音节：字母 + 必需的声调数字。
-_READING_RE = re.compile(r"([a-zA-ZüÜv:]+)([1-5])")
+_READING_RE = re.compile(r"([a-zA-ZüÜv]+)([1-5])")
 
 
 @dataclass
@@ -64,7 +64,7 @@ class CharEdit:
                 return None
             try:
                 return cast(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return None
 
         pinyin = str(raw.get("pinyin") or "").strip().lower()
@@ -117,8 +117,14 @@ class EditSet:
 
     @classmethod
     def from_dict(cls, raw: dict) -> EditSet:
+        if not isinstance(raw, dict):
+            return cls()
         chars: dict[int, CharEdit] = {}
-        for key, value in (raw.get("chars") or {}).items():
+        chars_raw = raw.get("chars")
+        if not isinstance(chars_raw, dict):
+            # 坏文件里 chars 可能是字符串或列表，不能直接 .items()
+            chars_raw = {}
+        for key, value in chars_raw.items():
             try:
                 offset = int(key)
             except (TypeError, ValueError):
@@ -176,7 +182,8 @@ def dictionary_overrides(text: str,
 def load_userdict(path: Path) -> dict[str, str]:
     """读取用户词典；文件缺失或坏掉时返回空词典，不影响生成。"""
     try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        # utf-8-sig：记事本存的「UTF-8 带 BOM」也能读，否则整份词典静默失效
+        raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
     words = raw.get("words") if isinstance(raw, dict) else None

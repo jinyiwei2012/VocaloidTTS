@@ -205,7 +205,7 @@ def _find_open_dialog(timeout: float = 15.0) -> int | None:
         found: list[int] = []
 
         @WNDENUMPROC
-        def cb(hwnd, _):
+        def cb(hwnd, _, found=found):
             if _class_name(hwnd) == "#32770":
                 # a file dialog exposes the filename edit with ID 1148
                 if _child_with_id(hwnd, 1148):

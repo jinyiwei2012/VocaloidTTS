@@ -8,7 +8,6 @@ protobuf/PyYAML just for export.
 from __future__ import annotations
 
 import json
-import math
 import struct
 from bisect import bisect_left, bisect_right
 from pathlib import Path

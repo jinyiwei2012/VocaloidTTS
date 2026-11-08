@@ -114,6 +114,19 @@ class EditSetTests(unittest.TestCase):
         })
         self.assertEqual(list(restored.chars), [2])
 
+    def test_non_dict_chars_is_empty(self):
+        # 坏文件里 chars 可能是字符串或列表，不能直接 .items()
+        for broken in ("x", [{}], 42):
+            with self.subTest(chars=broken):
+                self.assertEqual(EditSet.from_dict({"chars": broken}).chars, {})
+
+    def test_overflowing_numbers_are_ignored(self):
+        # JSON 的 1e400 / Infinity 在 int() 时抛 OverflowError
+        edit = CharEdit.from_dict({"tone": float("inf"),
+                                   "pause_ms": float("inf")})
+        self.assertEqual(edit.tone, 0)
+        self.assertIsNone(edit.pause_ms)
+
 
 class UserDictFileTests(unittest.TestCase):
     def setUp(self):
@@ -134,6 +147,12 @@ class UserDictFileTests(unittest.TestCase):
     def test_broken_file_is_empty(self):
         self.path.write_text("{not json", encoding="utf-8")
         self.assertEqual(load_userdict(self.path), {})
+
+    def test_utf8_bom_is_accepted(self):
+        # 记事本存「UTF-8 带 BOM」时不能让整份词典静默失效
+        self.path.write_text("\ufeff" + json.dumps(
+            {"words": {"好": "hao3"}}, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(load_userdict(self.path), {"好": "hao3"})
 
     def test_wrong_shape_is_empty(self):
         self.path.write_text(json.dumps({"words": [1, 2]}), encoding="utf-8")
