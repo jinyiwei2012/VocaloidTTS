@@ -1,6 +1,7 @@
 import unittest
 from dataclasses import replace
 
+from vocaloidtts.progress import Cancelled, Reporter
 from vocaloidtts.prosody import STYLE_PRESETS, VoiceOptions, compose
 
 
@@ -88,6 +89,45 @@ class ProsodyTests(unittest.TestCase):
         clamped = sum(1 for _, value in points if abs(value) >= 8192)
         self.assertEqual(clamped, 0)
         self.assertTrue(all(-8192 <= value <= 8191 for _, value in points))
+
+
+class ComposeProgressTests(unittest.TestCase):
+    def test_progress_covers_every_stage_and_ends_at_one(self):
+        seen = []
+        reporter = Reporter(lambda stage, frac: seen.append((stage, frac)),
+                            interval=0.0)
+        compose("大地上的人们都在看着这场戏剧，世界就在我们面前。" * 3,
+                reporter=reporter)
+        stages = [stage for stage, _ in seen]
+        self.assertEqual(stages[0], "parse")
+        self.assertEqual(stages[-1], "done")
+        self.assertTrue({"parse", "timing", "notes", "pitch", "pit",
+                         "curves", "done"}.issubset(set(stages)))
+        fractions = [frac for _, frac in seen]
+        self.assertEqual(fractions, sorted(fractions))
+        self.assertAlmostEqual(fractions[-1], 1.0)
+
+    def test_empty_text_still_finishes(self):
+        seen = []
+        reporter = Reporter(lambda stage, frac: seen.append((stage, frac)),
+                            interval=0.0)
+        song = compose("", reporter=reporter)
+        self.assertEqual(song.notes, [])
+        self.assertEqual(seen[-1][1], 1.0)
+
+    def test_cancel_stops_before_any_curve_work(self):
+        seen = []
+        reporter = Reporter(lambda stage, frac: seen.append((stage, frac)),
+                            should_cancel=lambda: True, interval=0.0)
+        with self.assertRaises(Cancelled):
+            compose("你好，世界！", reporter=reporter)
+        self.assertNotIn("done", [stage for stage, _ in seen])
+
+    def test_without_reporter_the_song_is_identical(self):
+        plain = compose("你好，世界！", VoiceOptions(seed=7))
+        quiet = compose("你好，世界！", VoiceOptions(seed=7),
+                        reporter=Reporter())
+        self.assertEqual(plain, quiet)
 
 
 if __name__ == "__main__":
