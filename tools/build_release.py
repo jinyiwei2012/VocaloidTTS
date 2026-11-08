@@ -6,12 +6,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# 允许 `python tools/build_release.py` 直接跑：脚本所在目录是 tools/，不含包
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 EXCLUDE_DIRS = {".git", ".venv", "__pycache__", "release", "release_web",
                 "build", "dist", ".github"}
+# 仓库根目录会散落历史发布包（几十 MB），它们不是源码
+EXCLUDE_SUFFIXES = {".zip"}
 
 
 def iter_source_files(root: Path):
@@ -22,6 +29,8 @@ def iter_source_files(root: Path):
         if rel.parts and rel.parts[0] in EXCLUDE_DIRS:
             continue
         if "__pycache__" in rel.parts:
+            continue
+        if path.suffix.lower() in EXCLUDE_SUFFIXES:
             continue
         yield path, rel
 
