@@ -728,7 +728,15 @@ def _cache_signature(cfg: dict) -> str:
         path = str(item.get("path", ""))
         try:
             stat = Path(path).stat()
-            parts.append(f"{path}|{stat.st_mtime_ns}|{stat.st_size}")
+            # 目录条目数一并入签名：Windows 的 mtime 只跟着系统时钟 tick
+            # （约 15 ms）走，同一 tick 内新建子目录时 mtime 可能不变，光看
+            # 时间戳会误判缓存仍然有效。
+            try:
+                with os.scandir(path) as entries:
+                    count = sum(1 for _ in entries)
+            except OSError:
+                count = -1
+            parts.append(f"{path}|{stat.st_mtime_ns}|{stat.st_size}|{count}")
         except OSError:
             parts.append(f"{path}|missing")
         parts.append(json.dumps(item, sort_keys=True, ensure_ascii=False))
