@@ -2060,10 +2060,21 @@ class VocaloidTTSApp(tk.Tk):
         if ok:
             self._log(f"已载入编辑器（{msg}），按空格试听；File > Export 可导出 WAV。")
             self.status.set("已载入 VOCALOID4/5")
-        else:
-            self._log(msg)
-            messagebox.showwarning("载入 V4/V5",
-                                   f"{msg}\n\n请手动在 V4/V5 中按 Ctrl+O 打开：\n{self.last_path}")
+            return
+        self._log(f"载入失败：{msg}")
+        self.status.set("载入失败")
+        path = self.last_path
+        if not path:
+            messagebox.showwarning("载入失败", msg)
+            return
+        folder = Path(path).parent
+        if messagebox.askyesno(
+                "载入失败",
+                f"{msg}\n\n文件位置：\n{folder}\n\n现在打开这个文件夹吗？"):
+            try:
+                os.startfile(folder)
+            except Exception as exc:
+                self._log(f"打开文件夹失败：{exc}")
 
     def install_plugin(self) -> None:
         if not v4_available():
