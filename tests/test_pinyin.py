@@ -200,6 +200,23 @@ class CharEditTests(unittest.TestCase):
             "你好", edits={0: CharEdit(char="你", stress=0.5)})
         self.assertGreater(edited[0].stress, base[0].stress)
 
+    def test_consecutive_punctuation_keeps_the_first_mark(self):
+        # 「？！」被后面的「！」盖掉的话，问句升调就丢了
+        self.assertEqual(text_to_syllables("真的吗？！")[-1].punct, "？")
+        self.assertEqual(text_to_syllables("太好了！？")[-1].punct, "！")
+
+    def test_trailing_space_still_marks_the_last_syllable_final(self):
+        for source in ("你好", "你好 ", "你好，", "你好。"):
+            with self.subTest(source=source):
+                self.assertTrue(text_to_syllables(source)[-1].final)
+
+    def test_letter_syllables_do_not_take_edits(self):
+        # 一个字母拆成多个音节，共用 src 会让一条纠音套到三个音节上
+        syls = text_to_syllables(
+            "w", edits={0: CharEdit(char="w", pinyin="wei", tone=2)})
+        self.assertEqual([s.pinyin for s in syls], ["da", "bu", "liu"])
+        self.assertEqual({s.src for s in syls}, {-1})
+
     def test_number_expansion_keeps_the_edit_on_the_right_character(self):
         # 「100」会展开成「一百」，长度变化会让之后的偏移整体漂移
         syls = text_to_syllables(

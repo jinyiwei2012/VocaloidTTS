@@ -165,6 +165,14 @@ class LocalEditTests(unittest.TestCase):
         song = compose("重明", dictionary={"重明": "chong2 ming2"})
         self.assertEqual([n.lyric for n in song.notes], ["chong", "ming"])
 
+    def test_exact_pause_is_not_read_as_punctuation(self):
+        # pause_ms=400 正好是「问句」那条旧启发式的阈值，不能被当成标点
+        asked = compose("你好世界？", VoiceOptions(seed=5))
+        paused = compose("你好世界", VoiceOptions(seed=5),
+                         edits={1: CharEdit(char="好", pause_ms=400)})
+        self.assertNotEqual(paused.controls["P"][-1],
+                            asked.controls["P"][-1])
+
     def test_edits_do_not_touch_neighbours(self):
         plain = compose("大地上的人们", VoiceOptions(seed=5))
         edited = compose("大地上的人们", VoiceOptions(seed=5),

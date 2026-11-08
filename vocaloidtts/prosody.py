@@ -215,9 +215,10 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
         mark = getattr(final, "punct", "")
         is_q = mark in ("？", "?")
         is_excl = mark in ("！", "!")
-        if not mark:
+        if not mark and not final.pause_lock:
             # Hand-built songs have no punctuation metadata; fall back to the
-            # old pause-length heuristic.
+            # old pause-length heuristic.  精确停顿（pause_lock）是用户显式设的
+            # 毫秒数，不能被当成标点去猜问句或感叹句。
             is_q = final.pause_after_ms == 400
             is_excl = final.pause_after_ms == 380
         ts = opts.tone_strength

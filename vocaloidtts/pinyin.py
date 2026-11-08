@@ -542,10 +542,17 @@ def text_to_syllables(text: str,
     def flush(pause_ms: int, final: bool = False, punct: str = "") -> None:
         nonlocal buffer, phrase
         if not buffer:
-            if pause_ms and syls:
-                syls[-1].pause_after_ms = max(syls[-1].pause_after_ms, pause_ms)
-                if punct:
+            # 连续标点（？！、！？）只保留第一个：问号决定句尾要不要抬高，
+            # 被后面的感叹号盖掉就变成陈述句了。末尾的空白或逗号也要补上
+            # final，否则最后一个音节会按非句尾处理，短一截、也没有句尾降调。
+            if syls:
+                if pause_ms:
+                    syls[-1].pause_after_ms = max(syls[-1].pause_after_ms,
+                                                 pause_ms)
+                if punct and not syls[-1].punct:
                     syls[-1].punct = punct
+                if final:
+                    syls[-1].final = True
             return
         local: list[Syllable] = []
         neutral_positions: list[tuple[int, str]] = []
@@ -557,9 +564,11 @@ def text_to_syllables(text: str,
                 _apply_tone_sandhi(chinese_run)
                 chinese_run = []
                 for py in _LATIN[ch.lower()].split():
+                    # 一个字母会拆成好几个音节（w -> da/bu/liu），共用一个 src
+                    # 会让一条纠音同时套到三个音节上。字母不支持纠音，标 -1。
                     local.append(Syllable(text=ch, pinyin=py, tone=1,
                                           phonemes=pinyin_to_phonemes(py),
-                                          phrase=phrase, src=idx))
+                                          phrase=phrase, src=-1))
                 continue
             got = ctx.get(idx) or _pinyin_for_char(ch)
             if not got:
@@ -718,10 +727,17 @@ def pinyin_text_to_syllables(text: str,
     def flush(pause_ms: int, final: bool = False, punct: str = "") -> None:
         nonlocal buffer, phrase
         if not buffer:
-            if pause_ms and syls:
-                syls[-1].pause_after_ms = max(syls[-1].pause_after_ms, pause_ms)
-                if punct:
+            # 连续标点（？！、！？）只保留第一个：问号决定句尾要不要抬高，
+            # 被后面的感叹号盖掉就变成陈述句了。末尾的空白或逗号也要补上
+            # final，否则最后一个音节会按非句尾处理，短一截、也没有句尾降调。
+            if syls:
+                if pause_ms:
+                    syls[-1].pause_after_ms = max(syls[-1].pause_after_ms,
+                                                 pause_ms)
+                if punct and not syls[-1].punct:
                     syls[-1].punct = punct
+                if final:
+                    syls[-1].final = True
             return
         local: list[Syllable] = []
         for tok in buffer:
