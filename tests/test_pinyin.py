@@ -1,7 +1,9 @@
 """Regression coverage for text readings, order and phrase boundaries."""
 import unittest
 
-from vocaloidtts.pinyin import normalize_text, num_to_chinese, text_to_syllables
+from vocaloidtts.pinyin import (normalize_text, num_to_chinese,
+                                pinyin_text_to_syllables, text_to_syllables)
+from vocaloidtts.progress import Cancelled, Reporter
 
 
 class NumberReadingTests(unittest.TestCase):
@@ -127,6 +129,35 @@ class TextSyllableTests(unittest.TestCase):
         self.assertEqual("".join(s.text for s in syllables), "你好世界")
         self.assertEqual([s.phrase for s in syllables], [0, 0, 1, 1])
         self.assertEqual([s.pause_after_ms for s in syllables], [0, 420, 0, 420])
+
+
+class ParseProgressTests(unittest.TestCase):
+    def test_progress_is_monotonic_and_reaches_one(self):
+        seen = []
+        reporter = Reporter(lambda stage, frac: seen.append((stage, frac)))
+        text_to_syllables("你好世界，今天天气真好。" * 40, reporter=reporter)
+        self.assertTrue(seen)
+        self.assertEqual({stage for stage, _ in seen}, {"parse"})
+        fractions = [frac for _, frac in seen]
+        self.assertEqual(fractions, sorted(fractions))
+        self.assertAlmostEqual(fractions[-1], 1.0)
+
+    def test_cancel_stops_the_parser(self):
+        with self.assertRaises(Cancelled):
+            text_to_syllables("你好世界。",
+                              reporter=Reporter(should_cancel=lambda: True))
+
+    def test_pinyin_input_reports_progress(self):
+        seen = []
+        reporter = Reporter(lambda stage, frac: seen.append((stage, frac)))
+        pinyin_text_to_syllables("ni3 hao3 shi4 jie4", reporter=reporter)
+        self.assertTrue(seen)
+        self.assertAlmostEqual(seen[-1][1], 1.0)
+
+    def test_pinyin_input_honours_cancel(self):
+        with self.assertRaises(Cancelled):
+            pinyin_text_to_syllables(
+                "ni3 hao3", reporter=Reporter(should_cancel=lambda: True))
 
 
 if __name__ == "__main__":
