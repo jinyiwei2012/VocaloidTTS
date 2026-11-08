@@ -264,17 +264,26 @@ def _detect_version(comp: Path, filenames: list[str]) -> str:
                     return "V" + match.group(1)
         except OSError:
             pass
-    low_path = str(comp).lower()
-    if "v3" in low_path:
-        return "V3"
-    if "v4" in low_path:
-        return "V4"
+    # 只看组件名和它的直接父目录，不看完整路径：临时目录的随机名（如
+    # tmpv3abc）里偶尔会撞出 "v3"，把 V4 组件判成 V3。真实安装目录的版本号
+    # 要么在直接父目录名里（MikuV4C / v3声库），要么写在 .ddb/.ddi 文件名里，
+    # 后者由下面两步兜住。
+    for part in (comp.name, comp.parent.name):
+        low = part.lower()
+        if "v3" in low:
+            return "V3"
+        if "v4" in low:
+            return "V4"
     vvds = [f.lower() for f in filenames if f.lower().endswith(".vvd")]
     if vvds and all(f.startswith("_v4compatible") for f in vvds):
         return "V5"
     for f in filenames:
         low = f.lower()
-        if low.endswith((".ddb", ".ddi")) and "v4" in low:
+        if not low.endswith((".ddb", ".ddi")):
+            continue
+        if "v3" in low:
+            return "V3"
+        if "v4" in low:
             return "V4"
     return "unknown"
 

@@ -56,6 +56,16 @@ class VoicebankComponentTests(unittest.TestCase):
         self.assertEqual((bank.bs, bank.pc), (4, 0))
         self.assertIn("V4", bank.display)
 
+    def test_stray_v3_in_an_upper_dir_does_not_win(self) -> None:
+        # CI 的临时目录随机名偶尔含 "v3"（tmpv3abc），曾把 V4 判成 V3
+        lib = self.root / "tmpv3abc" / "MikuV4C"
+        lib.mkdir(parents=True)
+        self._component(lib, "BNGE7CP7EMTRSNC3",
+                        ["MIKU_V4_Chinese.ddb", "MIKU_V4_Chinese.vvd"])
+        banks = scan_voicebank_folder(lib)
+        self.assertEqual(len(banks), 1)
+        self.assertEqual(banks[0].version, "V4")
+
     def test_v5_component_uses_ddi_name_and_eula_version(self) -> None:
         lib = self.root / "语调专用"
         lib.mkdir()
