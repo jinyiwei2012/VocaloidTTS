@@ -94,9 +94,10 @@ class _PitchIndex:
     def between(self, start: int, end: int) -> Iterable[tuple[int, int]]:
         left = bisect_left(self.ticks, start)
         right = bisect_right(self.ticks, end)
-        # Sorted input already has increasing indices. Sorting these indices
-        # also preserves the former scan's behavior for out-of-order controls.
-        return (self.points[i] for i in sorted(self.order[left:right]))
+        # 按 tick 升序返回。以前这里按「原始下标」排序，等于还原成源顺序；
+        # 一旦 controls["P"] 不是升序（测试和手工构造都会这样），下游的
+        # SVIP pointList 和 USTX 曲线就会拿到回退的 x，y 绑到错误的时刻。
+        return (self.points[self.order[i]] for i in range(left, right))
 
 
 def pit_cents(song: Song, note: Note, *,
@@ -403,7 +404,10 @@ def _svip_note(n: Note) -> dict:
         "keyNumber": int(n.midi),
         "lyric": lyric_for(n),
         "pronunciation": pronunciation_for(n),
-        "headTag": {"spLen": 0, "silLen": 0},
+        # OpenSVIP 的 HeadTag 是字符串，不是 svip3 那种 {spLen, silLen} 对象。
+        # 写成对象会让 Newtonsoft 反序列化抛 JsonSerializationException，
+        # 整份 .svip 打不开。
+        "headTag": "",
     }
 
 
@@ -430,15 +434,22 @@ def write_svip(song: Song, path: str) -> str:
         for x, cents in pit_cents(song, n, pitch_index=pitch_index):
             pitch.append([int(n.start + x), round(cents, 3)])
     track = {
-        "type": "singing",
+        # TrackJsonConverter 是大小写敏感的 switch，只认 "Singing"/"Instrumental"，
+        # 小写会被 return null，整条轨道丢掉。
+        "type": "Singing",
         "name": "洛天依",
-        "singer": XSTUDIO_LUOTIANYI_ID,
+        # OpenSVIP 用 AISingerName（歌手名）；UUID 是 X Studio 的字段，塞进来
+        # 既不是它的字段，也会让歌手变成空。
+        "AISingerName": "洛天依",
         "noteList": [_svip_note(n) for n in song.notes],
         "editedParams": {
             "pitch": _svip_param(pitch),
             "volume": _svip_param(((t, _db_value(v)) for t, v in _curve_values(song, "DYN"))),
             "breath": _svip_param(((t, v) for t, v in _curve_values(song, "BRE"))),
-            "gender": _svip_param(((t, v) for t, v in _curve_values(song, "GEN"))),
+            # VSQX 的 GEN 是 64=中性，OpenSVIP 的 Gender 是 -100..100（0=中性）；
+            # 原值直写会让整首歌偏高 64。
+            "gender": _svip_param(((t, (v - 64) * 100.0 / 63.0)
+                                   for t, v in _curve_values(song, "GEN"))),
         },
     }
     project = {

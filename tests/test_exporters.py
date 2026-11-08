@@ -81,10 +81,16 @@ def read_svip3(path):
 
 
 def reference_pit_cents(song, note):
-    """Original full scan, with the configured PBS applied to its values."""
-    points = [(int(t - note.start), float(v) * song.options.pbs / 8192 * 100)
-              for t, v in song.controls.get("P", [])
-              if note.start <= t <= note.start + note.dur]
+    """Full scan over the note's range, with the configured PBS applied.
+
+    输出按 tick 升序：下游（SVIP pointList、USTX 曲线）都假定点有序，
+    源顺序会让 x 回退、y 绑到错误的时刻。
+    """
+    points = sorted(
+        ((int(t - note.start), float(v) * song.options.pbs / 8192 * 100)
+         for t, v in song.controls.get("P", [])
+         if note.start <= t <= note.start + note.dur),
+        key=lambda p: p[0])
     if not points:
         points = [(0, 0.0), (max(1, note.dur), 0.0)]
     if points[0][0] > 0:
