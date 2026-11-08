@@ -21,6 +21,7 @@ from .edits import (CharEdit, EditSet, load_userdict, parse_reading,
 from .paths import appdata_dir, localappdata_dir
 from .pinyin import text_to_syllables
 from .progress import Cancelled, Reporter
+from .project import SUFFIX, Project, load_project, save_project
 from .prosody import STYLE_PRESETS, Song, VoiceOptions, compose
 from .tray import CloseHook, TrayIcon
 from .voicebank import (Voicebank, VoicebankRoot, add_voicebank_root,
@@ -371,6 +372,8 @@ class VocaloidTTSApp(tk.Tk):
         self.settings = self._load_settings()
         self.edits = EditSet()
         self.dictionary = load_userdict(appdata_dir() / "userdict.json")
+        self.project_path: str | None = None
+        self._autosave_job = None
 
         self._init_style()
         self._build()
@@ -387,6 +390,7 @@ class VocaloidTTSApp(tk.Tk):
             self._log("未找到 VOCALOID4/5；生成 VSQX 仍可用，但载入编辑器需要路径。")
             # 启动时不再弹窗；用户点「载入 V4/V5」时再询问。
         self.after(50, self._start_voicebank_scan)
+        self.after(300, self._restore_autosave)
 
     def _post(self, fn, *args) -> None:
         """把回调排到主线程。
@@ -861,6 +865,9 @@ class VocaloidTTSApp(tk.Tk):
             menu.add_command(
                 label=f"{meta['short']}  ·  {meta['extension']}",
                 command=lambda k=key: self.generate(fmt=k))
+        menu.add_separator()
+        menu.add_command(label="保存项目…", command=self.save_project_dialog)
+        menu.add_command(label="打开项目…", command=self.open_project_dialog)
         if self.recent:
             menu.add_separator()
             recent = tk.Menu(menu, tearoff=0, bg=CARD, fg=TEXT,
@@ -1198,6 +1205,7 @@ class VocaloidTTSApp(tk.Tk):
                 pass
         # Deliberately no compose/render here: sliders and typing must stay
         # responsive.  A song is built only by "生成 VSQX".
+        self._schedule_autosave()
 
     def _on_text_modified(self, event=None) -> None:
         if self._loading:
@@ -1210,6 +1218,7 @@ class VocaloidTTSApp(tk.Tk):
         if self.edits.chars and not self.edits.matches(
                 self.text.get("1.0", "end-1c")):
             self._log("文本已改动，之前的逐字纠音对不上了，生成时会被忽略。")
+        self._schedule_autosave()
 
     # ------------------------------------------------------ 逐字纠音
     def _text_offset(self, index: str) -> int:
@@ -2021,6 +2030,136 @@ class VocaloidTTSApp(tk.Tk):
             os.startfile(path)
         except Exception as exc:
             messagebox.showerror("打开失败", str(exc))
+
+    # ---------------------------------------------------------------- project
+    def _collect_project(self) -> Project:
+        numerator, denominator = self._meter()
+        return Project(
+            text=self.text.get("1.0", "end-1c"),
+            mode=self._mode(),
+            bpm=self._bpm(),
+            numerator=numerator,
+            denominator=denominator,
+            options=self._voice_options(),
+            edits=self.edits,
+        )
+
+    def _apply_project(self, project: Project) -> None:
+        self._loading = True
+        try:
+            self.text.delete("1.0", "end")
+            self.text.insert("1.0", project.text)
+            self.text.edit_modified(False)
+        finally:
+            self._loading = False
+        self.char_count.configure(text=f"{len(project.text.strip())} 字")
+        self.mode_var.set("拼音输入" if project.mode == "pinyin" else "中文文本")
+        self.bpm_var.set(self._fmt_num(project.bpm))
+        self.num_var.set(str(project.numerator))
+        self.den_var.set(str(project.denominator))
+        self._apply_voice_options(project.options)
+        self.edits = project.edits
+        self._on_option_change()
+
+    def _apply_voice_options(self, options: VoiceOptions) -> None:
+        if options.style in STYLE_LABELS:
+            self.style_var.set(STYLE_LABELS[options.style])
+        values = {
+            "pitch": options.pitch,
+            "tone2": options.tone2_pitch,
+            "tone3": options.tone3_pitch,
+            "tone4": options.tone4_pitch,
+            "tone5": options.tone5_pitch,
+            "rate": options.rate,
+            "tone": options.tone_strength,
+            "energy": options.energy,
+            "pause": options.pause_scale,
+            "breath": options.breath,
+            "vibrato": options.vibrato,
+            "gender": options.gender,
+        }
+        for key, value in values.items():
+            if key in self.sliders:
+                try:
+                    self.sliders[key][0].set(value)
+                except Exception:
+                    pass
+        self.seed_var.set(str(options.seed))
+
+    def save_project_dialog(self) -> None:
+        project = self._collect_project()
+        if not project.text.strip():
+            messagebox.showwarning("没有内容", "先写点文字再保存项目。")
+            return
+        path = filedialog.asksaveasfilename(
+            title="保存项目",
+            defaultextension=SUFFIX,
+            initialfile=f"VocaloidTTS_{datetime.now():%Y%m%d_%H%M%S}{SUFFIX}",
+            filetypes=[("VocaloidTTS 项目", f"*{SUFFIX}"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            save_project(Path(path), project)
+        except Exception as exc:
+            messagebox.showerror("保存失败", str(exc))
+            return
+        self.project_path = path
+        self._log(f"项目已保存：{path}")
+
+    def open_project_dialog(self) -> None:
+        path = filedialog.askopenfilename(
+            title="打开项目",
+            filetypes=[("VocaloidTTS 项目", f"*{SUFFIX}"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            project = load_project(Path(path))
+        except ValueError as exc:
+            messagebox.showerror("打开失败", str(exc))
+            return
+        self._apply_project(project)
+        self.project_path = path
+        self._log(f"已打开项目：{path}（{len(project.text)} 字，"
+                  f"{len(project.edits.chars)} 处人工设置）")
+
+    def _autosave_path(self) -> Path:
+        return appdata_dir() / "autosave.vttsproj"
+
+    def _schedule_autosave(self) -> None:
+        if getattr(self, "_loading", False):
+            return
+        job = getattr(self, "_autosave_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._autosave_job = self.after(2500, self._autosave_now)
+
+    def _autosave_now(self) -> None:
+        self._autosave_job = None
+        try:
+            save_project(self._autosave_path(), self._collect_project())
+        except Exception as exc:
+            self._log(f"自动保存失败：{exc}")
+
+    def _restore_autosave(self) -> None:
+        path = self._autosave_path()
+        if not path.exists():
+            return
+        try:
+            project = load_project(path)
+        except ValueError as exc:
+            self._log(f"自动恢复失败：{exc}")
+            return
+        if not project.text.strip():
+            return
+        current = self.text.get("1.0", "end-1c")
+        if project.text == current:
+            return
+        self._apply_project(project)
+        self._log(f"已恢复上次编辑的内容（{len(project.text)} 字，"
+                  f"{len(project.edits.chars)} 处人工设置）")
 
     # --------------------------------------------------------------- settings
     def _settings_path(self) -> Path:
