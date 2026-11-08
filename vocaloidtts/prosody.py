@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import random
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable
 
 from .edits import CharEdit
@@ -125,8 +125,7 @@ _TONE_LEN = {1: 1.00, 2: 1.06, 3: 1.24, 4: 0.92, 5: 0.58}
 
 
 def _assign_timing(syls: list[Syllable], opts: VoiceOptions, tpm: float,
-                   reporter: Reporter | None = None,
-                   edits: dict[int, CharEdit] | None = None) -> None:
+                   reporter: Reporter | None = None) -> None:
     rep = reporter or Reporter()
     rng = random.Random(opts.seed)
     cursor = 0.0
@@ -143,7 +142,9 @@ def _assign_timing(syls: list[Syllable], opts: VoiceOptions, tpm: float,
         if s.pause_after_ms:
             base *= 1.05
         s.dur_ms = max(95.0, min(680.0, base))
-        edit = edits.get(s.src) if edits else None
+        # 解析阶段已经把命中的修正记在音节上，这里直接读，不再拿 s.src
+        # 去查一份按原文偏移存键的字典（那会让拉长/停顿落到别的字上）。
+        edit = s.edit
         if edit is not None:
             if edit.dur_scale is not None:
                 s.dur_ms = max(40.0, min(1600.0, s.dur_ms * edit.dur_scale))
@@ -205,7 +206,7 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
 
     anchors: dict[int, list[tuple[float, float]]] = {}
     total_phrases = len(phrases)
-    for done, (pi, group) in enumerate(phrases.items()):
+    for done, (_pi, group) in enumerate(phrases.items()):
         if (done & 0x0F) == 0:
             rep.check()
             rep.report("pitch", 0.07 * done / total_phrases)
@@ -337,7 +338,7 @@ def _pitch_curve(syls: list[Syllable], opts: VoiceOptions,
     win = max(1, int(round(8.0)))
     out: list[tuple[int, float]] = []
     sample_count = max(1, len(samples))
-    for i, (tt, v) in enumerate(samples):
+    for i, (tt, _v) in enumerate(samples):
         if (i & 0x1FF) == 0:
             rep.check()
             rep.report("pitch", 0.53 + 0.47 * i / sample_count)
@@ -528,7 +529,7 @@ def compose(text: str, options: VoiceOptions | None = None,
 
     tpm = ms_to_ticks(1.0, bpm, resolution)
     rep.stage("timing", 0.06)
-    _assign_timing(syls, opts, tpm, rep.child(0.06, 0.07), edits=edits)
+    _assign_timing(syls, opts, tpm, rep.child(0.06, 0.07))
     total_ticks = 0
     notes: list[Note] = []
     tone_anchor = {

@@ -18,7 +18,7 @@ from . import __version__
 from .edits import (CharEdit, EditSet, load_userdict, parse_reading,
                     save_userdict)
 from .paths import appdata_dir, localappdata_dir
-from .pinyin import text_to_syllables
+from .pinyin import char_readings
 from .progress import Cancelled, Reporter
 from .project import SUFFIX, Project, load_project, save_project
 from .prosody import STYLE_PRESETS, Song, VoiceOptions, compose
@@ -1364,10 +1364,9 @@ class VocaloidTTSApp(tk.Tk):
                 return
             end = start + 24
         fragment = content[start:end]
-        auto: dict[int, tuple[str, int]] = {}
-        for syl in text_to_syllables(fragment):
-            if syl.src >= 0:
-                auto[syl.src] = (syl.pinyin, syl.tone)
+        # 用 char_readings 而不是 syl.src：后者是归一化之后的下标，直接当
+        # 原文下标去取会让对话框里每一行的「自动读音」整体错位。
+        auto = char_readings(fragment, self.dictionary)
         self._pronunciation_dialog(start, fragment, auto)
 
     def _pronunciation_dialog(self, start: int, fragment: str,
@@ -1970,7 +1969,10 @@ class VocaloidTTSApp(tk.Tk):
             except Cancelled:
                 self._post(self._finish_generate, None)
             except Exception as exc:
-                self._post(self._fail_generate, exc)
+                # 在异常还活着的时候取堆栈：等到主线程的 after 回调里再调
+                # traceback.format_exc() 只会拿到 "NoneType: None"。
+                detail = traceback.format_exc()
+                self._post(self._fail_generate, exc, detail)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2031,17 +2033,20 @@ class VocaloidTTSApp(tk.Tk):
         if payload["open_after"]:
             self._open_in_editor(path)
 
-    def _fail_generate(self, exc: Exception) -> None:
+    def _fail_generate(self, exc: Exception, detail: str = "") -> None:
         self._busy = False
         self.config(cursor="")
         self._hide_progress()
         self.status.set("生成失败")
-        # A bad pinyin token is a user mistake, not a crash: show the message,
-        # keep the traceback for the log only.
-        detail = str(exc) if isinstance(exc, ValueError) else \
-            f"{exc}\n\n{traceback.format_exc()}"
-        messagebox.showerror("生成失败", detail)
+        # 拼音写错这类是用户输入问题，只显示消息；其它异常把 worker 线程里
+        # 抓到的堆栈一并给出来，否则用户只看到一句「PermissionError」。
+        if isinstance(exc, ValueError):
+            messagebox.showerror("生成失败", str(exc))
+        else:
+            messagebox.showerror("生成失败", detail or str(exc))
         self._log(f"生成失败：{exc}")
+        if detail and not isinstance(exc, ValueError):
+            self._log(detail)
 
     def generate_and_open(self) -> None:
         target = self._editor_target()

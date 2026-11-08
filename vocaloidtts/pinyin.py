@@ -1,7 +1,6 @@
 """Chinese text -> singable pinyin syllables and VOCALOID X-SAMPA phonemes."""
 from __future__ import annotations
 
-import difflib
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -256,6 +255,7 @@ class Syllable:
     index: int = 0
     src: int = -1   # 源文本里的字符偏移，逐字纠音靠它定位
     pause_lock: bool = False   # True 表示 pause_after_ms 是精确值，不再乘 pause_scale
+    edit: CharEdit | None = None   # 解析阶段命中的逐字修正（时值阶段直接读它）
 
 
 _CLAUSE_END = set("。！？；：\n")
@@ -445,28 +445,31 @@ def _context_pinyin(text: str,
     return out
 
 
-#: 超过这个长度就不建偏移映射：difflib 在长文本上不便宜，而纠音本身是
-#: 逐字操作，超长文本里用到的概率很低。
-_OFFSET_MAP_LIMIT = 20000
+def _offset_map(original: str, normalized: str) -> dict[int, int]:
+    """原文下标 → 归一化下标，线性扫描。
 
+    ``normalize_text`` 的改动是局部的（数字/百分号展开成几个汉字、标点替换），
+    所以遇到不匹配时就在归一化文本里往前找原文的当前字符：找到说明这里刚被
+    展开过，跳过那几个字继续对齐；找不到说明这个字符被删掉了（多余空格之类），
+    原文侧前进一格。
 
-def _offset_map(original: str, normalized: str) -> dict[int, int] | None:
-    """原文下标 → 归一化下标；只映射能逐字对齐的片段。
-
-    数字展开（``100`` → ``一百``）会改变长度，之后的偏移整体漂移，用户按原文
-    位置设的纠音就会落到别的字上。difflib 找出两边相同的片段，把片段内的下标
-    对应起来；被替换掉的那一段（数字本身）不参与映射——那里也不是汉字。
+    早先版本用 ``difflib.SequenceMatcher``，在长文本上最坏 O(n²)——实测两万字
+    要十几秒，期间连取消按钮都没反应。这个版本是线性的。
     """
-    if len(original) > _OFFSET_MAP_LIMIT:
-        return None
     out: dict[int, int] = {}
-    matcher = difflib.SequenceMatcher(None, original, normalized,
-                                      autojunk=False)
-    for tag, i1, i2, j1, _j2 in matcher.get_opcodes():
-        if tag != "equal":
+    i = j = 0
+    n, m = len(original), len(normalized)
+    while i < n and j < m:
+        if original[i] == normalized[j]:
+            out[i] = j
+            i += 1
+            j += 1
             continue
-        for k in range(i2 - i1):
-            out[i1 + k] = j1 + k
+        found = normalized.find(original[i], j, min(m, j + 32))
+        if found < 0:
+            i += 1
+        else:
+            j = found
     return out
 
 
@@ -487,6 +490,9 @@ def _apply_char_edits(syls: list[Syllable], edits: dict[int, CharEdit],
             continue
         if s.src >= len(text) or text[s.src] != edit.char:
             continue
+        # 记到音节上：时值阶段（拉长/精确停顿）也读这一条，避免两个阶段
+        # 各拿一套偏移基准去查同一份字典。
+        s.edit = edit
         if edit.pinyin and is_valid_pinyin(edit.pinyin):
             s.pinyin = edit.pinyin
             s.phonemes = edit.phonemes or pinyin_to_phonemes(edit.pinyin)
@@ -519,11 +525,8 @@ def text_to_syllables(text: str,
         # 归一化可能改变长度（100 → 一百），把用户按原文位置设的纠音搬到
         # 归一化后的位置上；对不齐的条目直接丢掉，交给 char 校验兜底。
         mapping = _offset_map(original, text)
-        if mapping is None:
-            edits = None
-        else:
-            edits = {mapping[offset]: edit
-                     for offset, edit in edits.items() if offset in mapping}
+        edits = {mapping[offset]: edit
+                 for offset, edit in edits.items() if offset in mapping}
     rep.check()
     ctx = _context_pinyin(text, rep.child(0.0, 0.45))
     if dictionary:
@@ -669,6 +672,30 @@ def _parse_pinyin_token(tok: str) -> tuple[str, int, str]:
         raise ValueError(f"无法识别拼音：{tok}（请检查声母/韵母，或使用 拼音|音素 覆盖）")
     ph = override if override else pinyin_to_phonemes(py)
     return py, tone, ph
+
+
+def char_readings(text: str,
+                  dictionary: dict[str, str] | None = None
+                  ) -> dict[int, tuple[str, int]]:
+    """原文每个下标对应的自动读音 ``(拼音, 声调)``。
+
+    只返回能对齐到音节的字符：标点、空格、以及数字展开出来的字都不在其中。
+    纠音对话框用它预填「自动读音」——直接拿 ``Syllable.src`` 当原文下标会错位，
+    因为那是 ``normalize_text`` 之后的位置。
+    """
+    normalized = normalize_text(text)
+    if normalized == text:
+        mapping = {i: i for i in range(len(text))}
+    else:
+        mapping = _offset_map(text, normalized)
+    by_src = {s.src: (s.pinyin, s.tone)
+              for s in text_to_syllables(text, dictionary=dictionary)}
+    out: dict[int, tuple[str, int]] = {}
+    for offset in range(len(text)):
+        target = mapping.get(offset)
+        if target is not None and target in by_src:
+            out[offset] = by_src[target]
+    return out
 
 
 def pinyin_text_to_syllables(text: str,
