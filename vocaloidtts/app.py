@@ -308,6 +308,31 @@ def resource_path(rel: str) -> Path:
     return base / rel
 
 
+#: 逐字修饰的下拉选项；None 表示「跟自动规则走」。
+STRESS_CHOICES = [("自动", None), ("弱 -0.3", -0.3), ("强 +0.3", 0.3),
+                  ("很强调 +0.6", 0.6)]
+DUR_CHOICES = [("自动", None), ("短 0.7×", 0.7), ("长 1.3×", 1.3),
+               ("更长 1.8×", 1.8)]
+PAUSE_CHOICES = [("自动", None), ("100 ms", 100), ("200 ms", 200),
+                 ("350 ms", 350), ("600 ms", 600), ("1 秒", 1000)]
+
+
+def choice_label(choices, value):
+    """把值还原成下拉框里的显示文本；找不到就用第一项（自动）。"""
+    for label, candidate in choices:
+        if candidate == value:
+            return label
+    return choices[0][0]
+
+
+def choice_value(choices, label):
+    """把下拉框文本还原成值；未知文本按「自动」处理。"""
+    for name, value in choices:
+        if name == label:
+            return value
+    return None
+
+
 class VocaloidTTSApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -1230,17 +1255,17 @@ class VocaloidTTSApp(tk.Tk):
     def _pronunciation_dialog(self, start: int, fragment: str,
                               auto: dict[int, tuple[str, int]]) -> None:
         win = tk.Toplevel(self)
-        win.title("逐字纠音")
+        win.title("逐字纠音与修饰")
         win.configure(bg=BG)
         win.transient(self)
         win.resizable(False, False)
 
-        tk.Label(win, text="改拼音或声调；拼音留空表示保持自动读音",
+        tk.Label(win, text="拼音留空 = 保持自动读音；其余留「自动」= 跟规则走",
                  bg=BG, fg=MUTED, font=(FONT, 9)).pack(anchor="w", padx=14,
                                                        pady=(12, 8))
         grid = tk.Frame(win, bg=BG)
         grid.pack(fill="both", expand=True, padx=14)
-        for col, title in enumerate(("字", "拼音", "声调")):
+        for col, title in enumerate(("字", "拼音", "声调", "强调", "拉长", "停顿")):
             tk.Label(grid, text=title, bg=BG, fg=MUTED, font=(FONT, 8)).grid(
                 row=0, column=col, sticky="w", padx=(0, 8))
 
@@ -1254,53 +1279,72 @@ class VocaloidTTSApp(tk.Tk):
             tk.Label(grid, text=ch, bg=BG, fg=TEXT, font=(FONT, 12)).grid(
                 row=i + 1, column=0, sticky="w", pady=2)
             py_var = tk.StringVar(value=py)
-            tk.Entry(grid, textvariable=py_var, width=10, bg=CARD2, fg=TEXT,
+            tk.Entry(grid, textvariable=py_var, width=9, bg=CARD2, fg=TEXT,
                      insertbackground=ACCENT, relief="flat", font=(FONT, 9),
                      highlightbackground=LINE, highlightthickness=1).grid(
                 row=i + 1, column=1, padx=(0, 8), pady=2, ipady=2)
             tone_var = tk.StringVar(
                 value="自动" if not tone else ("轻声" if tone == 5 else str(tone)))
-            ttk.Combobox(grid, textvariable=tone_var, width=5, state="readonly",
+            ttk.Combobox(grid, textvariable=tone_var, width=4, state="readonly",
                          values=["自动", "1", "2", "3", "4", "轻声"],
-                         font=(FONT, 9)).grid(row=i + 1, column=2, pady=2)
-            rows.append((offset, ch, py_var, tone_var, auto_py, auto_tone))
+                         font=(FONT, 9)).grid(row=i + 1, column=2,
+                                              padx=(0, 8), pady=2)
+            stress_var = tk.StringVar(value=choice_label(
+                STRESS_CHOICES, current.stress if current else None))
+            ttk.Combobox(grid, textvariable=stress_var, width=9, state="readonly",
+                         values=[label for label, _ in STRESS_CHOICES],
+                         font=(FONT, 9)).grid(row=i + 1, column=3,
+                                              padx=(0, 8), pady=2)
+            dur_var = tk.StringVar(value=choice_label(
+                DUR_CHOICES, current.dur_scale if current else None))
+            ttk.Combobox(grid, textvariable=dur_var, width=8, state="readonly",
+                         values=[label for label, _ in DUR_CHOICES],
+                         font=(FONT, 9)).grid(row=i + 1, column=4,
+                                              padx=(0, 8), pady=2)
+            pause_var = tk.StringVar(value=choice_label(
+                PAUSE_CHOICES, current.pause_ms if current else None))
+            ttk.Combobox(grid, textvariable=pause_var, width=7, state="readonly",
+                         values=[label for label, _ in PAUSE_CHOICES],
+                         font=(FONT, 9)).grid(row=i + 1, column=5, pady=2)
+            rows.append((offset, ch, py_var, tone_var, stress_var, dur_var,
+                         pause_var, auto_py, auto_tone))
 
         def apply() -> None:
             changed = 0
-            for offset, ch, py_var, tone_var, auto_py, auto_tone in rows:
+            for (offset, ch, py_var, tone_var, stress_var, dur_var, pause_var,
+                 auto_py, auto_tone) in rows:
                 pinyin = py_var.get().strip().lower()
                 label = tone_var.get()
                 tone = 0 if label == "自动" else (5 if label == "轻声" else int(label))
-                old = self.edits.get(offset)
                 edit = CharEdit(
                     char=ch,
                     pinyin="" if pinyin == auto_py else pinyin,
                     tone=0 if tone in (0, auto_tone) else tone,
-                    stress=old.stress if old else None,
-                    dur_scale=old.dur_scale if old else None,
-                    pause_ms=old.pause_ms if old else None,
+                    stress=choice_value(STRESS_CHOICES, stress_var.get()),
+                    dur_scale=choice_value(DUR_CHOICES, dur_var.get()),
+                    pause_ms=choice_value(PAUSE_CHOICES, pause_var.get()),
                 )
                 if not edit.is_empty():
                     changed += 1
                 self.edits.set(offset, edit)
             self.edits.take_snapshot(self.text.get("1.0", "end-1c"))
-            self._log(f"已更新 {len(rows)} 个字的发音，其中 {changed} 个是覆盖")
+            self._log(f"已更新 {len(rows)} 个字，其中 {changed} 个是覆盖")
             win.destroy()
 
         def reset() -> None:
-            for offset, _ch, py_var, tone_var, _ap, _at in rows:
-                old = self.edits.get(offset)
-                if old is not None:
-                    self.edits.set(offset, CharEdit(
-                        stress=old.stress, dur_scale=old.dur_scale,
-                        pause_ms=old.pause_ms))
+            for (offset, _ch, py_var, tone_var, stress_var, dur_var,
+                 pause_var, _ap, _at) in rows:
+                self.edits.set(offset, CharEdit())
                 py_var.set("")
                 tone_var.set("自动")
-            self._log(f"已清除 {len(rows)} 个字的发音覆盖")
+                stress_var.set(STRESS_CHOICES[0][0])
+                dur_var.set(DUR_CHOICES[0][0])
+                pause_var.set(PAUSE_CHOICES[0][0])
+            self._log(f"已清除 {len(rows)} 个字的全部人工设置")
 
         bar = tk.Frame(win, bg=BG)
         bar.pack(fill="x", padx=14, pady=(10, 12))
-        self._button(bar, "恢复自动", reset, "ghost", 8).pack(side="left")
+        self._button(bar, "全部恢复自动", reset, "ghost", 10).pack(side="left")
         self._button(bar, "编辑词典…", self.manage_userdict, "ghost", 9).pack(
             side="left", padx=(8, 0))
         self._button(bar, "确定", apply, "primary", 10).pack(side="right")
