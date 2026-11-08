@@ -327,7 +327,13 @@ class VocaloidTTSApp(tk.Tk):
         except Exception:
             self._close_hook = None
 
-        self.voicebanks: list[Voicebank] = detect_voicebanks()
+        # Scanning walks the registry and several disks, so it runs on a worker
+        # thread after the window is up.  Until it finishes the list is empty
+        # and every consumer has to cope with that.
+        self.voicebanks: list[Voicebank] = []
+        self._scanning = False
+        self._want_bank_id = ""
+        self._want_bank_index: int | None = None
         self.vb_index = 0
         self.song: Song | None = None
         self.last_path: str | None = None
@@ -340,7 +346,6 @@ class VocaloidTTSApp(tk.Tk):
         self._build()
         self._apply_settings()
         self._log("VocaloidTTS 已就绪。输入文字后点“生成工程”，选择要导出的格式。")
-        self._log("声库扫描：" + "、".join(v.display for v in self.voicebanks))
         custom_roots = get_voicebank_roots()
         if custom_roots:
             self._log("自定义声库目录：" + "；".join(r.path for r in custom_roots))
@@ -351,6 +356,7 @@ class VocaloidTTSApp(tk.Tk):
         if not v4_available() and not v5_available():
             self._log("未找到 VOCALOID4/5；生成 VSQX 仍可用，但载入编辑器需要路径。")
             # 启动时不再弹窗；用户点「载入 V4/V5」时再询问。
+        self.after(50, self._start_voicebank_scan)
 
     def _set_window_icon(self) -> None:
         ico = resource_path("assets/vocaloidtts.ico")
@@ -473,8 +479,12 @@ class VocaloidTTSApp(tk.Tk):
         pill.pack(side="right", pady=10)
         tk.Label(pill, text="V4/V5", bg="#142321", fg=ACCENT,
                  font=(FONT, 8, "bold"), padx=9, pady=4).pack(side="left")
+        # 启动时扫描还没跑，voicebanks 为空，这里不能下标取第一个。
+        first_bank = self.voicebanks[0] if self.voicebanks else None
         self.bank_pill = tk.Label(
-            pill, text=self._bank_badge_text(self.voicebanks[0]),
+            pill,
+            text=(self._bank_badge_text(first_bank) if first_bank
+                  else "  未检测到声库"),
             bg="#142321", fg="#79a9a2", font=(FONT, 8), padx=5)
         self.bank_pill.pack(side="left")
 
@@ -1237,31 +1247,73 @@ class VocaloidTTSApp(tk.Tk):
 
     def _refresh_voicebanks(self, select_id: str | None = None,
                             force: bool = False) -> None:
-        old_id = select_id
-        if old_id is None and self.voicebanks:
+        """重新扫描声库；扫描在后台线程跑，这里立即返回。"""
+        self._start_voicebank_scan(select_id=select_id, force=force)
+
+    def _start_voicebank_scan(self, select_id: str | None = None,
+                              force: bool = False) -> None:
+        if self._scanning:
+            self._log("声库扫描还在进行，稍候再试。")
+            return
+        self._scanning = True
+        if hasattr(self, "vb_note"):
+            self.vb_note.configure(text="正在扫描声库…")
+        self._log("正在扫描声库…")
+
+        def worker() -> None:
             try:
-                old_id = self._current_voicebank().id
-            except Exception:
-                old_id = None
-        banks = detect_voicebanks(use_cache=not force)
+                banks = detect_voicebanks(use_cache=not force)
+            except Exception as exc:
+                self.after(0, lambda e=exc: self._scan_failed(e))
+                return
+            self.after(0, lambda: self._scan_finished(banks, select_id))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _scan_failed(self, exc: Exception) -> None:
+        self._scanning = False
+        if hasattr(self, "vb_note"):
+            self.vb_note.configure(text="声库扫描失败；点“＋ 添加文件夹”手动指定")
+        self._log(f"声库扫描失败：{exc}")
+
+    def _scan_finished(self, banks: list[Voicebank],
+                       select_id: str | None = None) -> None:
+        self._scanning = False
         self.voicebanks = banks
         self.vb_combo["values"] = [v.label for v in banks]
-        idx = 0
-        if old_id:
-            for i, vb in enumerate(banks):
-                if vb.id == old_id:
-                    idx = i
-                    break
-        if banks:
-            self.vb_combo.current(idx)
-        self._update_bank_badge()
+        if select_id:
+            self._want_bank_id = select_id
+        self._restore_voicebank_selection()
         custom = get_voicebank_roots()
         extra = f"，自定义目录 {len(custom)} 个" if custom else ""
         self._log(f"声库扫描：{len(banks)} 个{extra}")
+        if hasattr(self, "vb_note"):
+            if banks:
+                self.vb_note.configure(text="找不到歌姬时，点“＋ 添加文件夹”指定声库目录")
+            else:
+                self.vb_note.configure(text="没有检测到声库；点“＋ 添加文件夹”指定声库目录")
+
+    def _restore_voicebank_selection(self) -> None:
+        """把记住的声库 id（或旧配置里的下标）落到下拉框上。
+
+        启动时扫描还没回来，所以选择要等扫描结束后再恢复一次。
+        """
+        if not self.voicebanks or not hasattr(self, "vb_combo"):
+            return
+        idx: int | None = None
+        if self._want_bank_id:
+            for i, vb in enumerate(self.voicebanks):
+                if vb.id == self._want_bank_id:
+                    idx = i
+                    break
+        if idx is None and self._want_bank_index is not None:
+            if 0 <= self._want_bank_index < len(self.voicebanks):
+                idx = self._want_bank_index
+        self.vb_combo.current(0 if idx is None else idx)
+        self._update_bank_badge()
 
     def rescan_voicebanks(self) -> None:
         self._refresh_voicebanks(force=True)
-        self.vb_note.configure(text="已重新扫描；找不到时点“＋ 添加文件夹”指定声库目录")
 
     def add_voicebank_folder(self) -> None:
         path = filedialog.askdirectory(
@@ -1269,12 +1321,27 @@ class VocaloidTTSApp(tk.Tk):
             mustexist=True)
         if not path:
             return
-        try:
-            found = scan_voicebank_folder(path)
-        except Exception as exc:
-            messagebox.showerror("扫描失败", str(exc))
-            return
+        self.vb_note.configure(text=f"正在扫描 {Path(path).name}…")
+        self._log(f"正在扫描声库目录：{path}")
+
+        def worker() -> None:
+            try:
+                found = scan_voicebank_folder(path)
+            except Exception as exc:
+                self.after(0, lambda e=exc: self._add_folder_failed(e))
+                return
+            self.after(0, lambda: self._add_folder_done(path, found))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _add_folder_failed(self, exc: Exception) -> None:
+        self.vb_note.configure(text="扫描失败；可以换个目录再试")
+        self._log(f"扫描目录失败：{exc}")
+        messagebox.showerror("扫描失败", str(exc))
+
+    def _add_folder_done(self, path: str, found: list[Voicebank]) -> None:
         if not found:
+            self.vb_note.configure(text="这个文件夹里没有声库；换一个目录试试")
             messagebox.showwarning(
                 "没有发现声库",
                 "这个文件夹里没有找到 .vvd 声库文件。\n\n"
@@ -1410,6 +1477,7 @@ class VocaloidTTSApp(tk.Tk):
         self._update_bank_badge()
         if vb is None:
             return
+        self._want_bank_id = vb.id
         self._log(f"已选择声库：{vb.label}  (bs={vb.bs}, pc={vb.pc})")
 
     def _current_voicebank(self) -> Voicebank | None:
@@ -1758,13 +1826,15 @@ class VocaloidTTSApp(tk.Tk):
     def _apply_voicebank_setting(self, s: dict) -> None:
         vb_id = s.get("voicebank_id")
         if vb_id:
-            for i, vb in enumerate(self.voicebanks):
-                if vb.id == vb_id:
-                    self.vb_combo.current(i)
-                    break
-        elif s.get("voicebank") is not None and 0 <= int(s["voicebank"]) < len(self.voicebanks):
-            self.vb_combo.current(int(s["voicebank"]))
-        self._update_bank_badge()
+            self._want_bank_id = str(vb_id)
+        elif s.get("voicebank") is not None:
+            try:
+                self._want_bank_index = int(s["voicebank"])
+            except (TypeError, ValueError):
+                self._want_bank_index = None
+        # 扫描是异步的：列表还没回来时这里什么也不做，扫描结束后
+        # _scan_finished 会再调一次。
+        self._restore_voicebank_selection()
 
     def _apply_transport_setting(self, s: dict) -> None:
         if s.get("style") in STYLE_LABELS.values():
