@@ -19,15 +19,18 @@ _FALLBACK_ORDER = ("utf-8-sig", "gb18030", "utf-16")
 
 
 def _looks_broken(text: str) -> bool:
-    """Reject decodings dominated by private-use or Hangul code points."""
+    """Reject decodings dominated by private-use code points.
+
+    韩文音节（U+AC00..U+D7AF）不算「坏」：真正的 UTF-8 韩文会先走 utf-8 分支，
+    而被 utf-16 误判的 GBK 字节会被 utf-8 的严格解码挡掉；反过来把它们当可疑，
+    会让合法的 UTF-8 韩文掉进 gb18030 变成乱码。
+    """
     if not text:
         return False
     suspicious = 0
     for ch in text:
         code = ord(ch)
         if 0xE000 <= code <= 0xF8FF or 0xDC80 <= code <= 0xDCFF:
-            suspicious += 1
-        elif 0xAC00 <= code <= 0xD7AF:
             suspicious += 1
     return suspicious > max(2, len(text) // 10)
 

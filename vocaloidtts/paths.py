@@ -19,7 +19,10 @@ def _migrate(new: Path, old: Path) -> Path:
     try:
         new.mkdir(parents=True, exist_ok=True)
     except Exception:
-        return old
+        # 退回旧目录会让数据写到 %APPDATA%\ToneTalk，而 V4 任务插件把
+        # %LOCALAPPDATA%\VocaloidTTS\vocaloidtts_job.txt 写死了，插件会永远
+        # 读不到数据。宁可返回新路径让后续写入报错，也不要静默分叉。
+        pass
     return new
 
 

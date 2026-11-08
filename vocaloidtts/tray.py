@@ -14,6 +14,16 @@ from typing import Callable
 
 if sys.platform != "win32":  # pragma: no cover
     TrayIcon = None  # type: ignore
+
+    class CloseHook:  # type: ignore[no-redef]
+        """非 Windows 上的空壳。
+
+        app.py 无条件 `from .tray import CloseHook, TrayIcon`；少了这个
+        名字，整个 app 模块（含拖拽、生成）在 Linux/macOS 上都加载不了。
+        """
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise OSError("CloseHook 只在 Windows 上可用")
 else:
     user32 = ctypes.windll.user32
     shell32 = ctypes.windll.shell32

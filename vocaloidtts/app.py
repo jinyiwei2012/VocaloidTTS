@@ -299,7 +299,12 @@ def default_output_dir() -> Path:
         base.mkdir(parents=True, exist_ok=True)
     except Exception:
         base = Path.cwd() / "VocaloidTTS_Output"
-        base.mkdir(exist_ok=True)
+        try:
+            base.mkdir(exist_ok=True)
+        except OSError:
+            # 只读目录启动：返回一个不存在的路径，让上层在保存时弹错误框，
+            # 而不是在这里抛 OSError 连对话框都出不来。
+            return Path.cwd() / "VocaloidTTS_Output"
     return base
 
 
@@ -374,6 +379,8 @@ class VocaloidTTSApp(tk.Tk):
         self.project_path: str | None = None
         self._autosave_job = None
         self._previewing = False
+        # 用户是否已经动过输入框：动过就不让 300 ms 后的自动恢复覆盖
+        self._user_edited = False
 
         self._init_style()
         self._build()
@@ -1208,26 +1215,18 @@ class VocaloidTTSApp(tk.Tk):
             self.hint_label.configure(
                 text="空格分隔拼音，数字标声调：ni3 hao3 shi4 jie4；可用 ni3|n_i 覆盖音素。")
             if has_chinese:
-                self._loading = True
-                self.text.delete("1.0", "end")
-                self.text.insert("1.0", PINYIN_PRESETS["自然朗读"][1])
-                self.text.edit_modified(False)
-                self._loading = False
-                self.char_count.configure(text=f"{len(PINYIN_PRESETS['自然朗读'][1])} 字")
-                self._log("已切换到拼音直输模式，并载入拼音示例。")
+                # 以前这里会直接删掉正文换成示例，用户手打的内容就没了。
+                # 现在只提示，不动文本。
+                self._log("当前是中文正文；拼音模式需要拼音输入，"
+                          "请自行改写或清空后重新输入（不会自动替换）。")
             else:
                 self._log("已切换到拼音直输模式：不会再经过汉字多音字判断。")
         else:
             self.hint_label.configure(
                 text="小提示：逗号停半拍，句号换气；问号会自动抬高句尾。可直接把 .txt 拖进窗口。")
             if content and not has_chinese:
-                self._loading = True
-                self.text.delete("1.0", "end")
-                self.text.insert("1.0", PRESETS["自然朗读"][1])
-                self.text.edit_modified(False)
-                self._loading = False
-                self.char_count.configure(text=f"{len(PRESETS['自然朗读'][1])} 字")
-                self._log("已切换到中文文本模式，并载入中文示例。")
+                self._log("当前是拼音正文；中文模式需要汉字，"
+                          "请自行改写或清空后重新输入（不会自动替换）。")
             else:
                 self._log("已切换到中文文本模式。")
 
@@ -1294,6 +1293,7 @@ class VocaloidTTSApp(tk.Tk):
         self.text.insert("1.0", text)
         self.text.edit_modified(False)
         self._loading = False
+        self._user_edited = True
         self.char_count.configure(text=f"{len(text)} 字")
         self.style_var.set(STYLE_LABELS[style])
         self._on_style_change(silent=True)
@@ -1330,11 +1330,17 @@ class VocaloidTTSApp(tk.Tk):
         if not self.text.edit_modified():
             return
         self.text.edit_modified(False)
+        self._user_edited = True
         content = self.text.get("1.0", "end").strip()
         self.char_count.configure(text=f"{len(content)} 字")
         if self.edits.chars and not self.edits.matches(
                 self.text.get("1.0", "end-1c")):
-            self._log("文本已改动，逐字纠音会在生成时按字符位置重新核对。")
+            # 只在第一次发现漂移时记一条：每次按键都写盘 + 追加 Text 会卡
+            if not getattr(self, "_edit_drift_warned", False):
+                self._edit_drift_warned = True
+                self._log("文本已改动，逐字纠音会在生成时按字符位置重新核对。")
+        elif getattr(self, "_edit_drift_warned", False):
+            self._edit_drift_warned = False
         self._schedule_autosave()
 
     # ------------------------------------------------------ 逐字纠音
@@ -1623,9 +1629,17 @@ class VocaloidTTSApp(tk.Tk):
         self.stat_labels["size"].configure(text="—")
 
     # ---------------------------------------------------------------- actions
-    def _validate(self) -> bool:
+    def _validate(self, fmt: str = "vsqx") -> bool:
         if not self.text.get("1.0", "end").strip():
             messagebox.showwarning("没有文本", "请先输入要演唱的文字。")
+            return False
+        if fmt != "vsqx":
+            # 只有 VSQX 需要真实声库；svip3 / ustx / svip 写的是占位歌手，
+            # 没装 VOCALOID 的机器也应该能导出。
+            return True
+        if self._scanning and not self.voicebanks:
+            messagebox.showinfo("正在扫描声库",
+                                "声库还在后台扫描，稍等一两秒再点一次。")
             return False
         if not self.voicebanks:
             messagebox.showerror(
@@ -1924,7 +1938,7 @@ class VocaloidTTSApp(tk.Tk):
         if getattr(self, "_busy", False):
             self._log("上一次生成还没结束，请稍候。")
             return
-        if not self._validate():
+        if not self._validate(fmt):
             return
         fmt = "vsqx" if open_after else (fmt or self.export_format)
         if fmt not in FORMATS:
@@ -2192,6 +2206,10 @@ class VocaloidTTSApp(tk.Tk):
             messagebox.showwarning("文件不存在", f"{path}\n\n可能已被移动或删除。")
             self.recent = [p for p in self.recent if p != path]
             return
+        if path.lower().endswith(".vsqx"):
+            # .vsqx 不一定有关联程序；直接交给「载入 V4/V5」那条路径
+            self._open_in_editor(path)
+            return
         try:
             os.startfile(path)
             self._log(f"已打开最近工程：{path}")
@@ -2339,6 +2357,10 @@ class VocaloidTTSApp(tk.Tk):
             return
         if not project.text.strip():
             return
+        if self._user_edited:
+            # 用户已经开始输入了，别拿上次的内容盖掉
+            self._log("检测到上次的自动保存，但你已经在编辑，未恢复。")
+            return
         current = self.text.get("1.0", "end-1c")
         if project.text == current:
             return
@@ -2353,11 +2375,21 @@ class VocaloidTTSApp(tk.Tk):
         return base / "settings.json"
 
     def _load_settings(self) -> dict:
+        path = self._settings_path()
         try:
-            with open(self._settings_path(), encoding="utf-8") as f:
-                return json.load(f)
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
         except Exception:
             return {}
+        if not isinstance(data, dict):
+            # 合法 JSON 但不是对象：备份后当空配置，别让 _apply_settings 的
+            # s.get(...) 在构造函数里抛 AttributeError（窗口一闪而过）。
+            try:
+                path.replace(path.with_suffix(".json.bad"))
+            except OSError:
+                pass
+            return {}
+        return data
 
     def _save_settings(self) -> None:
         data = {
@@ -2535,12 +2567,16 @@ def main() -> None:
             bank = banks[0] if banks else Voicebank(
                 "BK8H76TAEHXWSKDB", "LuoTianyi", "洛天依 · 中文 Meng", 4, 0)
             write_vsqx(song, out, bank, title="VocaloidTTS Selftest")
-            write_job(song, default_job_path(), title="VocaloidTTS Selftest")
+            # 用临时 job：默认路径是用户 V4 任务插件正在读的文件，
+            # 跑一次自检就把他们的工程数据冲掉了。
+            write_job(song, tmp / "VocaloidTTS_selftest_job.txt",
+                      title="VocaloidTTS Selftest")
             (tmp / "VocaloidTTS_selftest.ok").write_text(
                 f"ok {len(song.notes)} notes {out}\n", encoding="utf-8")
         except Exception:
             (tmp / "VocaloidTTS_selftest.err").write_text(
                 traceback.format_exc(), encoding="utf-8")
+            raise SystemExit(1)
         return
     app = VocaloidTTSApp()
     app.mainloop()

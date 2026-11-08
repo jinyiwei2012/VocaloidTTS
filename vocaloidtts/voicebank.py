@@ -26,6 +26,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
+from .atomicio import atomic_write_text
 from .paths import appdata_dir
 
 DEFAULT_V4_EXE = r"C:\Program Files (x86)\Vocaloid4FE\VOCALOID4.exe"
@@ -49,6 +50,10 @@ def _valid_exe(path: str | Path, name: str = "vocaloid4.exe") -> bool:
 
 
 def _find_v5_from_registry() -> str:
+    if winreg is None:
+        # 非 Windows 上 winreg 是 None；这个函数在模块级就被调用，
+        # 不挡住的话 import vocaloidtts.voicebank 直接 AttributeError。
+        return ""
     try:
         with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE,
@@ -178,9 +183,11 @@ _KNOWN = [
     ("moqingxian", (4, 0, "墨清弦")),
 ]
 
-_CHINESE_MARKERS = ("chn", "china", "chinese", "ling", "luo", "yuezheng",
+_CHINESE_MARKERS = ("china", "chinese", "luo", "yuezheng",
                     "yanhe", "xinhua", "xingchen", "tianyi", "中文",
                     "yan_he", "moqingxian")
+# 注意不要加 "chn" / "ling" 这类短子串："techno" 含 chn、"sampling"
+# 含 ling，会把日文声库误判成中文（bs=4）。
 _JAPANESE_MARKERS = ("jpn", "japan", "kaito", "miku", "luka", "gumi", "ia_",
                      "rin", "len", "meiko", "gakupo", "yukari", "kokone")
 
@@ -313,8 +320,12 @@ def _make_bank(bid: str, name: str, vpath: str, source: str,
     if version != "unknown" and version not in pretty:
         pretty = f"{pretty} · {version}"
     if isinstance(ov, dict):
-        bs = int(ov.get("bs", bs))
-        pc = int(ov.get("pc", pc))
+        try:
+            bs = int(ov.get("bs", bs))
+            pc = int(ov.get("pc", pc))
+        except (TypeError, ValueError):
+            # 手改或旧版留下的 null / "四" 不能让整次扫描失败
+            pass
         pretty = str(ov.get("display", pretty))
     return Voicebank(bid, name, pretty, bs, pc, vpath, source, version)
 
@@ -344,7 +355,11 @@ def _scan_registry(seen: set[str], overrides: dict) -> list[Voicebank]:
                             name = _parse_name(str(winreg.QueryValueEx(sk, "NAME")[0]))
                             vpath = str(winreg.QueryValueEx(sk, "PATH")[0])
                             try:
-                                installed = int(winreg.QueryValueEx(sk, "INSTALLED")[0])
+                                raw = winreg.QueryValueEx(sk, "INSTALLED")[0]
+                                try:
+                                    installed = int(raw)
+                                except (TypeError, ValueError):
+                                    installed = 1
                             except OSError:
                                 installed = 1
                     except OSError:
@@ -437,12 +452,19 @@ def _read_legacy_roots() -> list[str]:
 def _load_scan_config() -> dict:
     """Return ``{"schema", "scan", "roots"}``; migrate the legacy txt on first use."""
     data = None
+    roots_path = _roots_json_path()
     try:
-        loaded = json.loads(_roots_json_path().read_text(encoding="utf-8"))
+        loaded = json.loads(roots_path.read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
             data = loaded
     except Exception:
         data = None
+        if roots_path.exists():
+            # 文件存在但读不出来：留一份 .bad 再重建，别让用户无从恢复
+            try:
+                roots_path.replace(roots_path.with_suffix(".json.bad"))
+            except OSError:
+                pass
     if data is None:
         data = {"schema": 1, "roots": [{"path": p} for p in _read_legacy_roots()]}
     data.setdefault("schema", 1)
@@ -457,8 +479,10 @@ def save_scan_config(cfg: dict) -> Path:
     path = _roots_json_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8")
+        # 原子写：直接截断重写时，如果进程在写一半时被杀，下次读到坏
+        # JSON 会把 roots 当成空，所有点位静默丢失。
+        atomic_write_text(path,
+                          json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
     except Exception:
         pass
     return path
@@ -562,6 +586,10 @@ def import_voicebank_roots(path: str | Path) -> list[VoicebankRoot]:
 _SKIP_DIRS = {
     "$recycle.bin", "system volume information", "__pycache__", "__macosx",
     "windows", "winsxs", "node_modules", ".git",
+    # 用户把 C:\ 或 C:\Users 加成点位时，这几个目录会让 os.walk 跑上
+    # 几十万个目录；声库不可能装在里面。
+    "users", "programdata", "appdata", "program files",
+    "program files (x86)", "$windows.~bt", "recovery",
 }
 
 

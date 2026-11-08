@@ -199,7 +199,13 @@ def _child_with_id(dlg: int, ctrl_id: int) -> int:
     return found[0] if found else 0
 
 
-def _find_open_dialog(timeout: float = 15.0) -> int | None:
+def _find_open_dialog(timeout: float = 15.0,
+                      owner_pid: int | None = None) -> int | None:
+    """等到一个文件对话框；给了 owner_pid 就只认这个进程的。
+
+    桌面上随时可能有别的程序的「另存为」——只按「#32770 + 控件 1148」认，
+    会把路径写进别人的对话框、还会去点它的确认键。调用方一律传 owner_pid。
+    """
     end = time.time() + timeout
     while time.time() < end:
         found: list[int] = []
@@ -207,6 +213,8 @@ def _find_open_dialog(timeout: float = 15.0) -> int | None:
         @WNDENUMPROC
         def cb(hwnd, _, found=found):
             if _class_name(hwnd) == "#32770":
+                if owner_pid is not None and _window_pid(hwnd) != owner_pid:
+                    return True
                 # a file dialog exposes the filename edit with ID 1148
                 if _child_with_id(hwnd, 1148):
                     found.append(hwnd)
@@ -284,13 +292,14 @@ def open_vsqx(path: str, target: str | None = None) -> tuple[bool, str]:
         time.sleep(1.0)
     hwnd, kind = got
     label = kind.upper()
-    dlg = _find_open_dialog(0.4)
+    owner = _window_pid(hwnd)
+    dlg = _find_open_dialog(0.4, owner_pid=owner)
     if not dlg:
         if kind == "v5":
             _send_ctrl_o(hwnd)
         else:
             user32.PostMessageW(hwnd, WM_COMMAND, ID_FILE_OPEN, 0)
-        dlg = _find_open_dialog(20.0)
+        dlg = _find_open_dialog(20.0, owner_pid=owner)
     if not dlg:
         return False, (f"没有等到 {label} 的打开对话框。\n\n"
                        f"请手动按 Ctrl+O 选择：\n{path}")
@@ -306,7 +315,7 @@ def open_vsqx(path: str, target: str | None = None) -> tuple[bool, str]:
                        f"请手动打开：\n{path}")
     user32.SendMessageW(btn, BM_CLICK, 0, 0)
     time.sleep(1.2)
-    leftover = _find_open_dialog(0.5)
+    leftover = _find_open_dialog(0.5, owner_pid=owner)
     if leftover:
         user32.SendMessageW(leftover, WM_COMMAND, 2, 0)
     return True, f"已发送载入指令（{label}）"

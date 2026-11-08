@@ -16,7 +16,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 EXCLUDE_DIRS = {".git", ".venv", "__pycache__", "release", "release_web",
-                "build", "dist", ".github"}
+                "build", "dist", ".github",
+                # 本机工具缓存与编辑器配置，不该进源码包
+                ".ruff_cache", ".mypy_cache", ".pytest_cache", ".coverage",
+                "htmlcov", ".idea", ".vscode"}
 # 仓库根目录会散落历史发布包（几十 MB），它们不是源码
 EXCLUDE_SUFFIXES = {".zip"}
 
