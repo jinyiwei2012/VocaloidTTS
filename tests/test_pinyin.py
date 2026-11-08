@@ -200,6 +200,29 @@ class CharEditTests(unittest.TestCase):
             "你好", edits={0: CharEdit(char="你", stress=0.5)})
         self.assertGreater(edited[0].stress, base[0].stress)
 
+    def test_number_expansion_keeps_the_edit_on_the_right_character(self):
+        # 「100」会展开成「一百」，长度变化会让之后的偏移整体漂移
+        syls = text_to_syllables(
+            "100个人", edits={4: CharEdit(char="人", pinyin="ren", tone=4)})
+        ren = [s for s in syls if s.text == "人"]
+        self.assertTrue(ren)
+        self.assertEqual(ren[0].tone, 4)
+
+    def test_percent_expansion_keeps_the_edit_aligned(self):
+        # 「50%」→「百分之五十」，原文偏移 4 的「人」要落到正确位置
+        syls = text_to_syllables(
+            "50%的人", edits={4: CharEdit(char="人", pinyin="ren", tone=4)})
+        ren = [s for s in syls if s.text == "人"]
+        self.assertTrue(ren)
+        self.assertEqual(ren[0].tone, 4)
+
+    def test_edit_without_char_is_skipped(self):
+        # 手工改过的 JSON 可能没有 char，无法确认位置，一律不应用
+        syls = text_to_syllables(
+            "中国人", edits={0: CharEdit(pinyin="chong", tone=2)})
+        self.assertEqual(syls[0].pinyin, "zhong")
+        self.assertEqual(syls[0].tone, 1)
+
     def test_src_points_at_the_source_character(self):
         syls = text_to_syllables("你好世界")
         self.assertEqual([s.src for s in syls], [0, 1, 2, 3])

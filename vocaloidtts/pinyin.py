@@ -1,10 +1,10 @@
 """Chinese text -> singable pinyin syllables and VOCALOID X-SAMPA phonemes."""
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
-from dataclasses import dataclass, field
-from typing import Iterable
+from dataclasses import dataclass
 
 try:
     from pypinyin import Style, pinyin as _pinyin
@@ -445,20 +445,47 @@ def _context_pinyin(text: str,
     return out
 
 
+#: 超过这个长度就不建偏移映射：difflib 在长文本上不便宜，而纠音本身是
+#: 逐字操作，超长文本里用到的概率很低。
+_OFFSET_MAP_LIMIT = 20000
+
+
+def _offset_map(original: str, normalized: str) -> dict[int, int] | None:
+    """原文下标 → 归一化下标；只映射能逐字对齐的片段。
+
+    数字展开（``100`` → ``一百``）会改变长度，之后的偏移整体漂移，用户按原文
+    位置设的纠音就会落到别的字上。difflib 找出两边相同的片段，把片段内的下标
+    对应起来；被替换掉的那一段（数字本身）不参与映射——那里也不是汉字。
+    """
+    if len(original) > _OFFSET_MAP_LIMIT:
+        return None
+    out: dict[int, int] = {}
+    matcher = difflib.SequenceMatcher(None, original, normalized,
+                                      autojunk=False)
+    for tag, i1, i2, j1, _j2 in matcher.get_opcodes():
+        if tag != "equal":
+            continue
+        for k in range(i2 - i1):
+            out[i1 + k] = j1 + k
+    return out
+
+
 def _apply_char_edits(syls: list[Syllable], edits: dict[int, CharEdit],
                       text: str) -> None:
     """把逐字修正盖到已经算好的音节上。
 
     在变调、轻声归并和重音分配之后调用，所以用户的显式设置总是最后生效。
-    ``CharEdit.char`` 用来兜底：文本被改过、偏移漂移时宁可跳过，也不错配。
+    ``CharEdit.char`` 用来兜底：只有「偏移处仍然是当初那个字」才应用，文本被
+    改过、偏移漂移时宁可跳过也不错配。没有 ``char`` 的条目一律跳过——那是
+    手工改过的 JSON，无法确认位置。
     """
     for s in syls:
         if s.src < 0:
             continue
         edit = edits.get(s.src)
-        if edit is None:
+        if edit is None or not edit.char:
             continue
-        if edit.char and (s.src >= len(text) or text[s.src] != edit.char):
+        if s.src >= len(text) or text[s.src] != edit.char:
             continue
         if edit.pinyin and is_valid_pinyin(edit.pinyin):
             s.pinyin = edit.pinyin
@@ -486,7 +513,17 @@ def text_to_syllables(text: str,
     """
     rep = reporter or Reporter()
     rep.stage("parse", 0.0)
+    original = text
     text = normalize_text(text)
+    if edits and text != original:
+        # 归一化可能改变长度（100 → 一百），把用户按原文位置设的纠音搬到
+        # 归一化后的位置上；对不齐的条目直接丢掉，交给 char 校验兜底。
+        mapping = _offset_map(original, text)
+        if mapping is None:
+            edits = None
+        else:
+            edits = {mapping[offset]: edit
+                     for offset, edit in edits.items() if offset in mapping}
     rep.check()
     ctx = _context_pinyin(text, rep.child(0.0, 0.45))
     if dictionary:
