@@ -48,13 +48,30 @@ class Project:
             raise ValueError("项目文件不是 JSON 对象")
 
         opts_raw = raw.get("options")
+        defaults = VoiceOptions()
         known = {f.name for f in fields(VoiceOptions)}
-        kwargs = ({k: v for k, v in opts_raw.items() if k in known}
-                  if isinstance(opts_raw, dict) else {})
-        try:
-            options = VoiceOptions(**kwargs)
-        except TypeError:
-            options = VoiceOptions()
+        kwargs: dict = {}
+        if isinstance(opts_raw, dict):
+            for key, value in opts_raw.items():
+                if key not in known:
+                    continue
+                # 按默认值的类型转换一遍：坏文件里的 "pitch": "high" 如果直接
+                # 塞进 VoiceOptions，compose 里的 int() 会在生成时才炸。
+                default = getattr(defaults, key)
+                try:
+                    if isinstance(default, bool):
+                        kwargs[key] = bool(value)
+                    elif isinstance(default, int):
+                        kwargs[key] = int(value)
+                    elif isinstance(default, float):
+                        kwargs[key] = float(value)
+                    elif isinstance(default, str):
+                        kwargs[key] = str(value)
+                    else:
+                        kwargs[key] = value
+                except (TypeError, ValueError):
+                    continue
+        options = VoiceOptions(**kwargs)
 
         edits_raw = raw.get("edits")
         edits = (EditSet.from_dict(edits_raw)

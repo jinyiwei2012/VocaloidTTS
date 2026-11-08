@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -471,6 +470,15 @@ class VocaloidTTSApp(tk.Tk):
             except Exception:
                 pass
             self._close_hook = None
+        # 退出时把还在排队的自动保存取消掉，否则 destroy 之后它还会触发，
+        # Tk 会报 invalid command name。
+        job = getattr(self, "_autosave_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+            self._autosave_job = None
         try:
             self.destroy()
         except Exception:
@@ -1299,7 +1307,7 @@ class VocaloidTTSApp(tk.Tk):
             self._on_option_change()
 
     def _on_option_change(self) -> None:
-        for key, (var, lab, fmt) in self.sliders.items():
+        for var, lab, fmt in self.sliders.values():
             try:
                 lab.configure(text=fmt(var.get()))
             except Exception:
@@ -1535,12 +1543,16 @@ class VocaloidTTSApp(tk.Tk):
             messagebox.showerror("保存失败", str(exc))
 
     def _active_edits(self, text: str) -> dict[int, CharEdit]:
-        """取当前可用的纠音；文本改过就整体放弃，绝不错配。"""
+        """取当前可用的纠音。
+
+        文本改过时不整体放弃，而是把每条交给 _apply_char_edits 逐条校验：它
+        要求「偏移处仍然是当初那个字」，对不上的那一条跳过。这样在末尾追加
+        一句话不会让前面所有设置失效。
+        """
         if not self.edits.chars:
             return {}
         if not self.edits.matches(text):
-            self._log("文本与纠音快照不一致，本次生成忽略逐字纠音。")
-            return {}
+            self._log("文本与纠音快照不一致，逐字纠音按字符位置重新核对。")
         return dict(self.edits.chars)
 
     def _voice_options(self) -> VoiceOptions:
@@ -1694,11 +1706,16 @@ class VocaloidTTSApp(tk.Tk):
         self._refresh_voicebanks(force=True)
 
     def add_voicebank_folder(self) -> None:
+        if self._scanning:
+            self._log("声库扫描还在进行，稍候再添加目录。")
+            return
         path = filedialog.askdirectory(
             title="选择歌姬声库文件夹（VOCALOID VoiceDB / 声库根目录）",
             mustexist=True)
         if not path:
             return
+        # 和「重扫」共用 _scanning 标志，避免两条扫描线程互相覆盖结果
+        self._scanning = True
         self.vb_note.configure(text=f"正在扫描 {Path(path).name}…")
         self._log(f"正在扫描声库目录：{path}")
 
@@ -1713,11 +1730,13 @@ class VocaloidTTSApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _add_folder_failed(self, exc: Exception) -> None:
+        self._scanning = False
         self.vb_note.configure(text="扫描失败；可以换个目录再试")
         self._log(f"扫描目录失败：{exc}")
         messagebox.showerror("扫描失败", str(exc))
 
     def _add_folder_done(self, path: str, found: list[Voicebank]) -> None:
+        self._scanning = False
         if not found:
             self.vb_note.configure(text="这个文件夹里没有声库；换一个目录试试")
             messagebox.showwarning(
