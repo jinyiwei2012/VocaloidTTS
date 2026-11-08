@@ -374,6 +374,7 @@ class VocaloidTTSApp(tk.Tk):
         self.dictionary = load_userdict(appdata_dir() / "userdict.json")
         self.project_path: str | None = None
         self._autosave_job = None
+        self._previewing = False
 
         self._init_style()
         self._build()
@@ -886,9 +887,8 @@ class VocaloidTTSApp(tk.Tk):
             menu.grab_release()
 
     def _build_preview(self, parent) -> None:
-        # Real-time pitch/VSQX rendering was removed on purpose: composing on
-        # every keystroke made large texts very laggy.  This card only shows
-        # the summary of the last explicit "生成 VSQX" action.
+        # 音高曲线只在点「预览音高」时算一次：每次按键都 compose 会让长文本
+        # 卡死，这条限制从 1.1 就保留着。
         outer, inner = self._card(parent, pad=12)
         outer.grid(row=1, column=0, sticky="nsew")
         outer.rowconfigure(1, weight=1)
@@ -896,20 +896,26 @@ class VocaloidTTSApp(tk.Tk):
         head.pack(fill="x", pady=(0, 4))
         tk.Label(head, text="生成信息", bg=CARD, fg=TEXT,
                  font=(FONT, 11, "bold")).pack(side="left")
-        tk.Label(head, text="仅在点击“生成工程”后更新", bg=CARD, fg=MUTED,
+        tk.Label(head, text="按需分析，不随打字重算", bg=CARD, fg=MUTED,
                  font=(FONT, 8)).pack(side="left", padx=10)
+        self.btn_preview = self._button(head, "预览音高", self.preview_pitch,
+                                        "ghost", 9)
+        self.btn_preview.pack(side="right")
 
         body = tk.Frame(inner, bg="#0f1218", highlightbackground="#222936",
                         highlightthickness=1)
         body.pack(fill="both", expand=True, pady=(4, 8))
+        self.pitch_canvas = tk.Canvas(body, bg="#0b0e13", height=120,
+                                      highlightthickness=0, bd=0)
+        self.pitch_canvas.pack(fill="both", expand=True, padx=6, pady=(6, 0))
         self.info_hint = tk.Label(
             body,
-            text="实时语调预览已关闭\n\n"
-                 "输入文字或调整参数时不会生成工程 / 音高曲线\n"
+            text="点右上角「预览音高」分析当前文本\n\n"
+                 "输入或调参数不会自动重算\n"
                  "点击“生成工程”后，这里显示工程统计",
             bg="#0f1218", fg="#66748b", justify="center",
-            font=(FONT, 10), wraplength=280)
-        self.info_hint.pack(expand=True)
+            font=(FONT, 9), wraplength=300)
+        self.info_hint.pack(fill="x", padx=6, pady=(4, 6))
 
         self.stats = tk.Frame(inner, bg=CARD)
         self.stats.pack(fill="x")
@@ -922,6 +928,101 @@ class VocaloidTTSApp(tk.Tk):
             lab = tk.Label(box, text="—", bg=CARD, fg=TEXT, font=(FONT, 9, "bold"))
             lab.pack(anchor="w")
             self.stat_labels[key] = lab
+
+    def preview_pitch(self) -> None:
+        """按当前文本与参数算一次音高，画在预览区。"""
+        if getattr(self, "_previewing", False):
+            self._log("音高分析还在跑，稍等一下。")
+            return
+        text = self.text.get("1.0", "end-1c")
+        if not text.strip():
+            messagebox.showinfo("预览音高", "先写点文字再预览。")
+            return
+        if len(text) > 4000:
+            if not messagebox.askyesno(
+                    "预览音高",
+                    f"文本有 {len(text)} 字，分析可能要几秒。继续吗？"):
+                return
+        mode = self._mode()
+        options = self._voice_options()
+        bpm = self._bpm()
+        numerator, denominator = self._meter()
+        edits = self._active_edits(text) if mode == "chinese" else {}
+        dictionary = dict(self.dictionary) if mode == "chinese" else {}
+        self._previewing = True
+        self._log("正在分析音高…")
+
+        def worker() -> None:
+            try:
+                song = compose(text, options, bpm=bpm, numerator=numerator,
+                               denominator=denominator, input_mode=mode,
+                               edits=edits, dictionary=dictionary)
+            except Exception as exc:
+                self._post(self._preview_failed, exc)
+                return
+            self._post(self._draw_pitch, song)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _preview_failed(self, exc: Exception) -> None:
+        self._previewing = False
+        self._log(f"音高分析失败：{exc}")
+
+    def _draw_pitch(self, song: Song) -> None:
+        self._previewing = False
+        canvas = self.pitch_canvas
+        canvas.delete("all")
+        points = sorted(song.controls.get("P") or [], key=lambda p: p[0])
+        if not points or not song.notes:
+            self.info_hint.configure(text="没有可画的音高（文本里没有音节）",
+                                     fg="#8b93a7")
+            return
+        width = max(160, canvas.winfo_width())
+        height = max(80, canvas.winfo_height())
+        total = max(1, song.total_ticks)
+        pbs = song.options.pbs
+        notes = song.notes
+        sampled: list[tuple[int, float]] = []
+        lowest, highest = math.inf, -math.inf
+        idx = 0
+        for tick, value in points:
+            while idx + 1 < len(notes) and tick >= notes[idx].start + notes[idx].dur:
+                idx += 1
+            pitch = notes[idx].midi + value * pbs / 8192
+            sampled.append((tick, pitch))
+            lowest = min(lowest, pitch)
+            highest = max(highest, pitch)
+        if highest - lowest < 1.0:
+            middle = (highest + lowest) / 2
+            lowest, highest = middle - 0.5, middle + 0.5
+        pad = 10
+
+        def xy(tick: int, pitch: float) -> tuple[float, float]:
+            x = pad + (width - 2 * pad) * tick / total
+            y = height - pad - (height - 2 * pad) * (pitch - lowest) / (
+                highest - lowest)
+            return x, y
+
+        previous_phrase = None
+        for syl in song.syllables:
+            if syl.phrase == previous_phrase:
+                continue
+            previous_phrase = syl.phrase
+            x, _ = xy(int(getattr(syl, "_start_tick", 0)), lowest)
+            canvas.create_line(x, pad, x, height - pad, fill="#1b2330")
+        coords: list[float] = []
+        for tick, pitch in sampled:
+            x, y = xy(tick, pitch)
+            coords.extend((x, y))
+        if len(coords) >= 4:
+            canvas.create_line(*coords, fill=ACCENT, width=2)
+        canvas.create_text(pad, pad, anchor="nw",
+                           text=f"{lowest:.1f} – {highest:.1f} st",
+                           fill="#5f6a7d", font=(FONT, 7))
+        self.info_hint.configure(
+            text=f"音高预览：{len(song.notes)} 音节 · {song.duration_s:.2f}s\n"
+                 f"音域 {highest - lowest:.1f} 半音，竖线是换气点",
+            fg=ACCENT)
 
     def _build_log(self, parent) -> None:
         outer = tk.Frame(parent, bg=CARD, highlightbackground=LINE, highlightthickness=1)
