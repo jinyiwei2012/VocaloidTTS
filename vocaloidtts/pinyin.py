@@ -11,6 +11,9 @@ try:
 except Exception:  # pragma: no cover - pypinyin is bundled in the release build
     _pinyin = None
 
+from .edits import CharEdit, dictionary_overrides
+from .progress import Reporter
+
 
 # ---------------------------------------------------------------------------
 # Text normalisation
@@ -45,18 +48,34 @@ def num_to_chinese(n: int) -> str:
         return "零"
     if n < 0:
         return "负" + num_to_chinese(-n)
-    parts: list[str] = []
-    group = 0
+    sections: list[int] = []
     while n > 0:
-        sec = n % 10000
-        if sec:
-            text = _section_to_chinese(sec) + _BIG_UNITS[group]
-            parts.append(text)
-        elif parts:
+        n, sec = divmod(n, 10000)
+        sections.append(sec)
+    if len(sections) > len(_BIG_UNITS):
+        # Keep unusually large decimal whole parts readable without indexing
+        # beyond the supported units (ordinary long IDs already use digits).
+        digits = str(sections[-1]) + "".join(f"{sec:04d}" for sec in reversed(sections[:-1]))
+        return "".join(_DIGITS[int(c)] for c in digits)
+    parts: list[str] = []
+    missing_group = False
+    for group in range(len(sections) - 1, -1, -1):
+        sec = sections[group]
+        if not sec:
+            missing_group = True
+            continue
+        if parts and (missing_group or sec < 1000):
             parts.append("零")
-        n //= 10000
-        group += 1
-    return "".join(reversed(parts)).replace("零零", "零").strip("零") or "零"
+        text = _section_to_chinese(sec)
+        if parts and 10 <= sec < 20:
+            # Omit 一 only at the start: 十万, but 一万零一十.
+            text = "一" + text
+        parts.append(text + _BIG_UNITS[group])
+        missing_group = False
+    return "".join(parts)
+
+
+_UNIT_WORDS = set("元人个米吨次年月日号页条张件位名户家辆台套分时里克升斤岁倍份期届级层楼室排座项种类款批组队场轮票卡码")
 
 
 def _number_token_to_chinese(tok: str, prev: str, next_: str) -> str:
@@ -67,8 +86,10 @@ def _number_token_to_chinese(tok: str, prev: str, next_: str) -> str:
     if len(tok) == 4 and tok.startswith(("19", "20")) and next_ in ("年",):
         return "".join(_DIGITS[int(c)] for c in tok)
     if len(tok) >= 7 and not (prev and prev.isdigit()):
-        # phone / ID numbers are read digit by digit
-        return "".join(_DIGITS[int(c)] for c in tok)
+        # phone / ID numbers are read digit by digit, but a number followed by
+        # a unit or measure word (12345678元, 10000000人) reads as a number.
+        if not (next_ and next_ in _UNIT_WORDS):
+            return "".join(_DIGITS[int(c)] for c in tok)
     return num_to_chinese(int(tok))
 
 
@@ -95,10 +116,17 @@ def normalize_text(text: str) -> str:
         start, end = m.start(), m.end()
         prev = text[start - 1] if start else ""
         nxt = text[end] if end < len(text) else ""
+        if tok.endswith("%"):
+            number = tok[:-1]
+            spoken = (_number_token_to_chinese(number, prev, nxt) if "." in number
+                      else num_to_chinese(int(number)))
+            return "百分之" + spoken
         return _number_token_to_chinese(tok, prev, nxt)
 
-    text = re.sub(r"\d+(?:\.\d+)?", repl, text)
-    # percent
+    text = re.sub(r"\d+(?:\.\d+)?%?", repl, text)
+    # Decimal points have now become 点; remaining periods end clauses.
+    text = text.replace(".", "。")
+    # Preserve the reading of a standalone percent sign.
     text = text.replace("%", "百分之")
     return text
 
@@ -219,12 +247,15 @@ class Syllable:
     tone: int
     phonemes: str
     pause_after_ms: int = 0
+    punct: str = ""
     stress: float = 0.0
     final: bool = False
     phrase: int = 0
     start_ms: float = 0.0
     dur_ms: float = 0.0
     index: int = 0
+    src: int = -1   # 源文本里的字符偏移，逐字纠音靠它定位
+    pause_lock: bool = False   # True 表示 pause_after_ms 是精确值，不再乘 pause_scale
 
 
 _CLAUSE_END = set("。！？；：\n")
@@ -343,11 +374,16 @@ _DE_WORDS = {"觉得", "记得", "懂得", "显得", "舍得", "值得", "漂亮
 _REDUP_VERBS = set("看说想试听写问找等笑玩尝摸擦洗睡走坐站唱跳跑读弹画做弄")
 
 
-def _neutral_marks(text: str) -> set[int]:
+def _neutral_marks(text: str, reporter: Reporter | None = None) -> set[int]:
     """Indices that should be sung with neutral tone (tone 5)."""
+    rep = reporter or Reporter()
     marks: set[int] = set()
     n = len(text)
+    words_rep = rep.child(0.0, 0.6)
     for i in range(n):
+        if (i & 0xFF) == 0:
+            rep.check()
+            words_rep.report("parse", i / n)
         for length in (3, 2):
             word = text[i:i + length]
             pos = _NEUTRAL_WORDS.get(word)
@@ -359,7 +395,11 @@ def _neutral_marks(text: str) -> set[int]:
         # AA verb reduplication: 看看 / 试试 / 想想
         if i + 1 < n and text[i] == text[i + 1] and text[i] in _REDUP_VERBS:
             marks.add(i + 1)
+    tail_rep = rep.child(0.6, 1.0)
     for i, ch in enumerate(text):
+        if (i & 0xFF) == 0:
+            rep.check()
+            tail_rep.report("parse", i / n)
         if ch == "地" and i > 0:
             prev1 = text[i - 1]
             prev2 = text[i - 2:i]
@@ -373,16 +413,21 @@ def _neutral_marks(text: str) -> set[int]:
     return marks
 
 
-def _context_pinyin(text: str) -> dict[int, tuple[str, int]]:
+def _context_pinyin(text: str,
+                    reporter: Reporter | None = None) -> dict[int, tuple[str, int]]:
     """Phrase-aware pinyin for each Chinese character.
 
     Calling pypinyin on the whole run (rather than one character at a time)
     lets it use its phrase dictionary for 目的/着急/了解/觉得 etc.
     """
+    rep = reporter or Reporter()
     out: dict[int, tuple[str, int]] = {}
     if _pinyin is None:
         return out
+    n = len(text)
     for m in re.finditer(r"[\u4e00-\u9fff]+", text):
+        rep.check()
+        rep.report("parse", m.start() / n)
         run = m.group()
         try:
             vals = _pinyin(run, style=Style.TONE3, neutral_tone_with_five=True,
@@ -400,36 +445,95 @@ def _context_pinyin(text: str) -> dict[int, tuple[str, int]]:
     return out
 
 
-def text_to_syllables(text: str) -> list[Syllable]:
-    """Parse Chinese text into a flat list of syllables, with pauses."""
+def _apply_char_edits(syls: list[Syllable], edits: dict[int, CharEdit],
+                      text: str) -> None:
+    """把逐字修正盖到已经算好的音节上。
+
+    在变调、轻声归并和重音分配之后调用，所以用户的显式设置总是最后生效。
+    ``CharEdit.char`` 用来兜底：文本被改过、偏移漂移时宁可跳过，也不错配。
+    """
+    for s in syls:
+        if s.src < 0:
+            continue
+        edit = edits.get(s.src)
+        if edit is None:
+            continue
+        if edit.char and (s.src >= len(text) or text[s.src] != edit.char):
+            continue
+        if edit.pinyin and is_valid_pinyin(edit.pinyin):
+            s.pinyin = edit.pinyin
+            s.phonemes = edit.phonemes or pinyin_to_phonemes(edit.pinyin)
+        elif edit.phonemes:
+            s.phonemes = edit.phonemes
+        if edit.tone:
+            s.tone = edit.tone
+        if edit.stress is not None:
+            s.stress = max(0.0, min(1.6, s.stress + edit.stress))
+
+
+def text_to_syllables(text: str,
+                      reporter: Reporter | None = None,
+                      edits: dict[int, CharEdit] | None = None,
+                      dictionary: dict[str, str] | None = None
+                      ) -> list[Syllable]:
+    """Parse Chinese text into a flat list of syllables, with pauses.
+
+    ``reporter`` 收到的是「解析阶段内部进度」0..1，调用方用
+    :meth:`Reporter.child` 把它映射到整条流水线的区间里。
+
+    ``edits`` 以字符偏移为键，覆盖单个字的拼音/声调；``dictionary`` 是用户
+    专名词典，命中后整词覆盖。优先级：逐字纠音 > 词典 > pypinyin 上下文。
+    """
+    rep = reporter or Reporter()
+    rep.stage("parse", 0.0)
     text = normalize_text(text)
-    ctx = _context_pinyin(text)
-    neutral = _neutral_marks(text)
+    rep.check()
+    ctx = _context_pinyin(text, rep.child(0.0, 0.45))
+    if dictionary:
+        ctx.update(dictionary_overrides(text, dictionary))
+    rep.check()
+    neutral = _neutral_marks(text, rep.child(0.45, 0.6))
+    total = len(text)
+    scan_rep = rep.child(0.6, 1.0)
     syls: list[Syllable] = []
     phrase = 0
     buffer: list[tuple[str, int]] = []
 
-    def flush(pause_ms: int, final: bool = False) -> None:
+    def flush(pause_ms: int, final: bool = False, punct: str = "") -> None:
         nonlocal buffer, phrase
         if not buffer:
             if pause_ms and syls:
                 syls[-1].pause_after_ms = max(syls[-1].pause_after_ms, pause_ms)
+                if punct:
+                    syls[-1].punct = punct
             return
         local: list[Syllable] = []
         neutral_positions: list[tuple[int, str]] = []
+        chinese_run: list[Syllable] = []
         for ch, idx in buffer:
+            if ch.isascii() and ch.isalpha():
+                # Letters belong to the same prosodic phrase, but their names
+                # are not Chinese words eligible for 一/不/3+3 sandhi.
+                _apply_tone_sandhi(chinese_run)
+                chinese_run = []
+                for py in _LATIN[ch.lower()].split():
+                    local.append(Syllable(text=ch, pinyin=py, tone=1,
+                                          phonemes=pinyin_to_phonemes(py),
+                                          phrase=phrase, src=idx))
+                continue
             got = ctx.get(idx) or _pinyin_for_char(ch)
             if not got:
                 continue
             py, tone = got
             ph = pinyin_to_phonemes(py)
             local.append(Syllable(text=ch, pinyin=py, tone=tone, phonemes=ph,
-                                  phrase=phrase))
+                                  phrase=phrase, src=idx))
+            chinese_run.append(local[-1])
             if idx in neutral:
                 neutral_positions.append((len(local) - 1, ch))
         # Tone sandhi (一/不/3+3) is based on the lexical tones, before the
         # neutral-tone reduction is applied.
-        _apply_tone_sandhi(local)
+        _apply_tone_sandhi(chinese_run)
         for pos, ch in neutral_positions:
             s = local[pos]
             s.tone = 5
@@ -441,34 +545,37 @@ def text_to_syllables(text: str) -> list[Syllable]:
             if final:
                 local[-1].final = True
             _apply_stress(local, final, "char")
+            if edits:
+                _apply_char_edits(local, edits, text)
             if pause_ms:
                 local[-1].pause_after_ms = pause_ms
+            if punct:
+                local[-1].punct = punct
             syls.extend(local)
         buffer = []
         phrase += 1
 
     for idx, ch in enumerate(text):
+        if (idx & 0xFF) == 0:
+            rep.check()
+            scan_rep.report("parse", idx / total)
         if ch in _CLAUSE_END:
             flush({"。": 420, "！": 380, "？": 400, "；": 280, "：": 260,
-                   "\n": 420}.get(ch, 350), final=True)
+                   "\n": 420}.get(ch, 350), final=True, punct=ch)
         elif ch in _COMMA:
-            flush(230, final=False)
+            flush(230, final=False, punct=ch)
         elif ch.isspace():
             flush(120, final=False)
         elif "\u4e00" <= ch <= "\u9fff":
             buffer.append((ch, idx))
         elif ch.isascii() and ch.isalpha():
-            # English fragments: spell letters with Chinese syllables
-            py = _LATIN.get(ch.lower(), "a").split()[0]
-            syl = Syllable(text=ch, pinyin=py, tone=1,
-                           phonemes=pinyin_to_phonemes(py),
-                           stress=0.30, phrase=phrase)
-            syls.append(syl)
+            buffer.append((ch, idx))
         elif ch.isdigit():
             buffer.append((ch, idx))
     flush(0, final=True)
     for i, s in enumerate(syls):
         s.index = i
+    rep.report("parse", 1.0, force=True)
     return syls
 
 # ---------------------------------------------------------------------------
@@ -527,7 +634,8 @@ def _parse_pinyin_token(tok: str) -> tuple[str, int, str]:
     return py, tone, ph
 
 
-def pinyin_text_to_syllables(text: str) -> list[Syllable]:
+def pinyin_text_to_syllables(text: str,
+                             reporter: Reporter | None = None) -> list[Syllable]:
     """Parse whitespace-separated pinyin (tone digits/marks) into syllables.
 
     Examples:
@@ -535,16 +643,21 @@ def pinyin_text_to_syllables(text: str) -> list[Syllable]:
         nǐ hǎo，shì jiè！
         ni3|n_i hao3          # override the phonemes for one syllable
     """
+    rep = reporter or Reporter()
+    rep.stage("parse", 0.0)
     text = text.replace("u:", "v").replace("U:", "v").replace("’", "'")
+    total = len(text)
     syls: list[Syllable] = []
     phrase = 0
     buffer: list[str] = []
 
-    def flush(pause_ms: int, final: bool = False) -> None:
+    def flush(pause_ms: int, final: bool = False, punct: str = "") -> None:
         nonlocal buffer, phrase
         if not buffer:
             if pause_ms and syls:
                 syls[-1].pause_after_ms = max(syls[-1].pause_after_ms, pause_ms)
+                if punct:
+                    syls[-1].punct = punct
             return
         local: list[Syllable] = []
         for tok in buffer:
@@ -559,18 +672,24 @@ def pinyin_text_to_syllables(text: str) -> list[Syllable]:
         _apply_stress(local, final, "pinyin")
         if pause_ms:
             local[-1].pause_after_ms = pause_ms
+        if punct:
+            local[-1].punct = punct
         syls.extend(local)
         buffer = []
         phrase += 1
 
     i = 0
     while i < len(text):
+        # Token-wise input: one iteration per token, so check every time and
+        # let the reporter throttle the callbacks.
+        rep.check()
+        rep.report("parse", i / total)
         ch = text[i]
         if ch in _PINYIN_CLAUSE:
-            flush(_PINYIN_PAUSE.get(ch, 350), final=True)
+            flush(_PINYIN_PAUSE.get(ch, 350), final=True, punct=ch)
             i += 1
         elif ch in _PINYIN_COMMA:
-            flush(230, final=False)
+            flush(230, final=False, punct=ch)
             i += 1
         elif ch.isspace():
             i += 1
@@ -588,4 +707,5 @@ def pinyin_text_to_syllables(text: str) -> list[Syllable]:
     flush(0, final=True)
     for k, s in enumerate(syls):
         s.index = k
+    rep.report("parse", 1.0, force=True)
     return syls

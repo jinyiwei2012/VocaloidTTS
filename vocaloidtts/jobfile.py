@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .atomicio import atomic_write_text
 from .paths import localappdata_dir
 from .prosody import Song
 
@@ -29,6 +30,5 @@ def write_job(song: Song, path: str | Path | None = None,
         jid = {"S": "PBS", "P": "PIT"}.get(cid, cid)
         for t, v in sorted(song.controls.get(cid, []), key=lambda x: x[0]):
             lines.append(f"CC\t{jid}\t{int(t)}\t{int(v)}")
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+    atomic_write_text(path, "\n".join(lines) + "\n")
     return path

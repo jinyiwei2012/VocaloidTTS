@@ -11,19 +11,27 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 import tkinter as tk
 import tkinter.font as tkfont
 
 from . import __version__
-from .paths import appdata_dir
+from .edits import (CharEdit, EditSet, load_userdict, parse_reading,
+                    save_userdict)
+from .paths import appdata_dir, localappdata_dir
+from .pinyin import text_to_syllables
+from .progress import Cancelled, Reporter
+from .project import SUFFIX, Project, load_project, save_project
 from .prosody import STYLE_PRESETS, Song, VoiceOptions, compose
 from .tray import CloseHook, TrayIcon
-from .voicebank import (Voicebank, add_voicebank_root, detect_voicebanks,
+from .voicebank import (Voicebank, VoicebankRoot, add_voicebank_root,
+                        detect_voicebanks, export_voicebank_roots,
                         get_jobplugin_dir, get_v4_exe, get_v5_exe,
-                        get_voicebank_roots, scan_voicebank_folder,
+                        get_voicebank_roots, import_voicebank_roots,
+                        remove_voicebank_root, scan_voicebank_folder,
                         set_v4_exe, set_v5_exe, v4_available, v5_available)
 from .jobfile import default_job_path, write_job
+from .textio import decode_text
 from .vsqx import write_vsqx
 from .exporters import FORMATS, write_svip, write_svip3, write_ustx
 
@@ -301,6 +309,31 @@ def resource_path(rel: str) -> Path:
     return base / rel
 
 
+#: 逐字修饰的下拉选项；None 表示「跟自动规则走」。
+STRESS_CHOICES = [("自动", None), ("弱 -0.3", -0.3), ("强 +0.3", 0.3),
+                  ("很强调 +0.6", 0.6)]
+DUR_CHOICES = [("自动", None), ("短 0.7×", 0.7), ("长 1.3×", 1.3),
+               ("更长 1.8×", 1.8)]
+PAUSE_CHOICES = [("自动", None), ("100 ms", 100), ("200 ms", 200),
+                 ("350 ms", 350), ("600 ms", 600), ("1 秒", 1000)]
+
+
+def choice_label(choices, value):
+    """把值还原成下拉框里的显示文本；找不到就用第一项（自动）。"""
+    for label, candidate in choices:
+        if candidate == value:
+            return label
+    return choices[0][0]
+
+
+def choice_value(choices, label):
+    """把下拉框文本还原成值；未知文本按「自动」处理。"""
+    for name, value in choices:
+        if name == label:
+            return value
+    return None
+
+
 class VocaloidTTSApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -311,6 +344,9 @@ class VocaloidTTSApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._tray = None
         self._quitting = False
+        self._busy = False
+        self._cancel = False
+        self.recent: list[str] = []
         self._set_window_icon()
         self._close_hook = None
         self.bind("<<VocaloidTTSClose>>", lambda e: self._on_close())
@@ -320,7 +356,13 @@ class VocaloidTTSApp(tk.Tk):
         except Exception:
             self._close_hook = None
 
-        self.voicebanks: list[Voicebank] = detect_voicebanks()
+        # Scanning walks the registry and several disks, so it runs on a worker
+        # thread after the window is up.  Until it finishes the list is empty
+        # and every consumer has to cope with that.
+        self.voicebanks: list[Voicebank] = []
+        self._scanning = False
+        self._want_bank_id = ""
+        self._want_bank_index: int | None = None
         self.vb_index = 0
         self.song: Song | None = None
         self.last_path: str | None = None
@@ -328,22 +370,39 @@ class VocaloidTTSApp(tk.Tk):
         self.export_format = "vsqx"
         self._loading = False
         self.settings = self._load_settings()
+        self.edits = EditSet()
+        self.dictionary = load_userdict(appdata_dir() / "userdict.json")
+        self.project_path: str | None = None
+        self._autosave_job = None
+        self._previewing = False
 
         self._init_style()
         self._build()
         self._apply_settings()
         self._log("VocaloidTTS 已就绪。输入文字后点“生成工程”，选择要导出的格式。")
-        self._log("声库扫描：" + "、".join(v.display for v in self.voicebanks))
         custom_roots = get_voicebank_roots()
         if custom_roots:
-            self._log("自定义声库目录：" + "；".join(custom_roots))
+            self._log("自定义声库目录：" + "；".join(r.path for r in custom_roots))
         if v4_available():
             self._log(f"VOCALOID4：{get_v4_exe()}")
         if v5_available():
             self._log(f"VOCALOID5：{get_v5_exe()}")
         if not v4_available() and not v5_available():
             self._log("未找到 VOCALOID4/5；生成 VSQX 仍可用，但载入编辑器需要路径。")
-            self.after(300, self._check_editor_startup)
+            # 启动时不再弹窗；用户点「载入 V4/V5」时再询问。
+        self.after(50, self._start_voicebank_scan)
+        self.after(300, self._restore_autosave)
+
+    def _post(self, fn, *args) -> None:
+        """把回调排到主线程。
+
+        Tk 的 ``after`` 在工作线程里可用，但窗口已经在销毁时 ``_register`` 会
+        抛 ``RuntimeError``；那种情况下丢掉回调就行，不该让工作线程带着异常退出。
+        """
+        try:
+            self.after(0, fn, *args)
+        except Exception:
+            pass
 
     def _set_window_icon(self) -> None:
         ico = resource_path("assets/vocaloidtts.ico")
@@ -369,8 +428,8 @@ class VocaloidTTSApp(tk.Tk):
             icon = str(resource_path("assets/vocaloidtts.ico"))
             tray = TrayIcon(
                 icon,
-                on_show=lambda: self.after(0, self._show_from_tray),
-                on_quit=lambda: self.after(0, self._quit_app),
+                on_show=lambda: self._post(self._show_from_tray),
+                on_quit=lambda: self._post(self._quit_app),
                 tooltip="VocaloidTTS",
             )
             ok = tray.start()
@@ -466,8 +525,12 @@ class VocaloidTTSApp(tk.Tk):
         pill.pack(side="right", pady=10)
         tk.Label(pill, text="V4/V5", bg="#142321", fg=ACCENT,
                  font=(FONT, 8, "bold"), padx=9, pady=4).pack(side="left")
+        # 启动时扫描还没跑，voicebanks 为空，这里不能下标取第一个。
+        first_bank = self.voicebanks[0] if self.voicebanks else None
         self.bank_pill = tk.Label(
-            pill, text=self._bank_badge_text(self.voicebanks[0]),
+            pill,
+            text=(self._bank_badge_text(first_bank) if first_bank
+                  else "  未检测到声库"),
             bg="#142321", fg="#79a9a2", font=(FONT, 8), padx=5)
         self.bank_pill.pack(side="left")
 
@@ -478,7 +541,8 @@ class VocaloidTTSApp(tk.Tk):
         bar.pack(fill="x", side="bottom")
         bar.pack_propagate(False)
         tk.Label(bar, textvariable=self.status, bg="#0e1117", fg=MUTED,
-                 font=(FONT, 8), anchor="w").pack(side="left", padx=22)
+                 font=(FONT, 8), anchor="w").pack(side="left", padx=(22, 10))
+        self._build_progress(bar)
         self.path_label = tk.Label(bar, text="", bg="#0e1117", fg="#5d6678",
                                    font=(FONT, 8), anchor="e")
         self.path_label.pack(side="right", padx=(0, 22))
@@ -506,6 +570,48 @@ class VocaloidTTSApp(tk.Tk):
         self._build_preview(right)
         self._build_log(right)
 
+    def _build_progress(self, bar) -> None:
+        """状态栏里的进度条与取消按钮；只在生成期间显示。"""
+        self._progress_width = 150
+        self.progress_canvas = tk.Canvas(
+            bar, width=self._progress_width, height=6, bg="#1a1f2b",
+            highlightthickness=0, bd=0)
+        self._progress_rect = self.progress_canvas.create_rectangle(
+            0, 0, 0, 6, fill=ACCENT, width=0)
+        self.progress_pct = tk.Label(bar, text="", bg="#0e1117", fg="#7f8a9d",
+                                     font=(FONT, 8), width=4, anchor="w")
+        self.btn_cancel = tk.Label(bar, text="✕ 取消", bg="#0e1117", fg="#e06c75",
+                                   font=(FONT, 8), cursor="hand2")
+        self.btn_cancel.bind("<Button-1>", lambda e: self._request_cancel())
+        self._progress_widgets = (self.progress_canvas, self.progress_pct,
+                                  self.btn_cancel)
+
+    def _show_progress(self) -> None:
+        self.progress_canvas.pack(side="left", padx=(0, 6))
+        self.progress_pct.pack(side="left", padx=(0, 8))
+        self.btn_cancel.configure(text="✕ 取消", fg="#e06c75")
+        self.btn_cancel.pack(side="left")
+        self._set_progress(0.0)
+
+    def _hide_progress(self) -> None:
+        for widget in self._progress_widgets:
+            widget.pack_forget()
+
+    def _set_progress(self, fraction: float) -> None:
+        """只在主线程调用；worker 线程通过 after(0, ...) 转发过来。"""
+        fraction = 0.0 if fraction < 0.0 else 1.0 if fraction > 1.0 else fraction
+        self.progress_canvas.coords(self._progress_rect, 0, 0,
+                                    self._progress_width * fraction, 6)
+        self.progress_pct.configure(text=f"{fraction * 100:.0f}%")
+
+    def _request_cancel(self) -> None:
+        if not getattr(self, "_busy", False):
+            return
+        self._cancel = True
+        self.btn_cancel.configure(text="取消中…", fg="#8b93a7")
+        self.status.set("正在取消…")
+        self._log("已请求取消，等当前检查点停下。")
+
     def _card(self, parent, pad=14) -> tk.Frame:
         outer = tk.Frame(parent, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         inner = tk.Frame(outer, bg=CARD)
@@ -530,6 +636,8 @@ class VocaloidTTSApp(tk.Tk):
         self.mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_mode_change())
         self.import_chip = RoundedChip(head, "导入 TXT", self.import_text_file)
         self.import_chip.pack(side="right", padx=(0, 8))
+        self.edit_chip = RoundedChip(head, "纠音", self.edit_pronunciation)
+        self.edit_chip.pack(side="right", padx=(0, 8))
 
         presets = tk.Frame(inner, bg=CARD)
         presets.pack(fill="x", pady=(10, 8))
@@ -585,6 +693,12 @@ class VocaloidTTSApp(tk.Tk):
             relief="flat", bd=0, highlightthickness=0, cursor="hand2",
             font=(FONT, 8), padx=2, pady=0)
         self.vb_rescan_btn.pack(side="right", padx=(0, 8))
+        self.vb_manage_btn = tk.Button(
+            vb_head, text="管理点位…", command=self.manage_voicebank_roots,
+            bg=CARD, fg=MUTED, activebackground=CARD2, activeforeground=TEXT,
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            font=(FONT, 8), padx=2, pady=0)
+        self.vb_manage_btn.pack(side="right", padx=(0, 8))
         tk.Label(vb_head, text="启动时自动扫描", bg=CARD, fg="#5f6a7d",
                  font=(FONT, 7)).pack(side="right", padx=(0, 10))
         self.vb_var = tk.StringVar()
@@ -752,6 +866,19 @@ class VocaloidTTSApp(tk.Tk):
             menu.add_command(
                 label=f"{meta['short']}  ·  {meta['extension']}",
                 command=lambda k=key: self.generate(fmt=k))
+        menu.add_separator()
+        menu.add_command(label="保存项目…", command=self.save_project_dialog)
+        menu.add_command(label="打开项目…", command=self.open_project_dialog)
+        if self.recent:
+            menu.add_separator()
+            recent = tk.Menu(menu, tearoff=0, bg=CARD, fg=TEXT,
+                             activebackground=ACCENT, activeforeground="#08211f",
+                             relief="flat", bd=0, font=(FONT, 9))
+            for path in self.recent[:8]:
+                recent.add_command(
+                    label=Path(path).name,
+                    command=lambda p=path: self._open_recent(p))
+            menu.add_cascade(label="最近工程", menu=recent)
         try:
             x = self.btn_generate.winfo_rootx()
             y = self.btn_generate.winfo_rooty() + self.btn_generate.winfo_height() + 2
@@ -760,9 +887,8 @@ class VocaloidTTSApp(tk.Tk):
             menu.grab_release()
 
     def _build_preview(self, parent) -> None:
-        # Real-time pitch/VSQX rendering was removed on purpose: composing on
-        # every keystroke made large texts very laggy.  This card only shows
-        # the summary of the last explicit "生成 VSQX" action.
+        # 音高曲线只在点「预览音高」时算一次：每次按键都 compose 会让长文本
+        # 卡死，这条限制从 1.1 就保留着。
         outer, inner = self._card(parent, pad=12)
         outer.grid(row=1, column=0, sticky="nsew")
         outer.rowconfigure(1, weight=1)
@@ -770,20 +896,26 @@ class VocaloidTTSApp(tk.Tk):
         head.pack(fill="x", pady=(0, 4))
         tk.Label(head, text="生成信息", bg=CARD, fg=TEXT,
                  font=(FONT, 11, "bold")).pack(side="left")
-        tk.Label(head, text="仅在点击“生成工程”后更新", bg=CARD, fg=MUTED,
+        tk.Label(head, text="按需分析，不随打字重算", bg=CARD, fg=MUTED,
                  font=(FONT, 8)).pack(side="left", padx=10)
+        self.btn_preview = self._button(head, "预览音高", self.preview_pitch,
+                                        "ghost", 9)
+        self.btn_preview.pack(side="right")
 
         body = tk.Frame(inner, bg="#0f1218", highlightbackground="#222936",
                         highlightthickness=1)
         body.pack(fill="both", expand=True, pady=(4, 8))
+        self.pitch_canvas = tk.Canvas(body, bg="#0b0e13", height=120,
+                                      highlightthickness=0, bd=0)
+        self.pitch_canvas.pack(fill="both", expand=True, padx=6, pady=(6, 0))
         self.info_hint = tk.Label(
             body,
-            text="实时语调预览已关闭\n\n"
-                 "输入文字或调整参数时不会生成工程 / 音高曲线\n"
+            text="点右上角「预览音高」分析当前文本\n\n"
+                 "输入或调参数不会自动重算\n"
                  "点击“生成工程”后，这里显示工程统计",
             bg="#0f1218", fg="#66748b", justify="center",
-            font=(FONT, 10), wraplength=280)
-        self.info_hint.pack(expand=True)
+            font=(FONT, 9), wraplength=300)
+        self.info_hint.pack(fill="x", padx=6, pady=(4, 6))
 
         self.stats = tk.Frame(inner, bg=CARD)
         self.stats.pack(fill="x")
@@ -796,6 +928,101 @@ class VocaloidTTSApp(tk.Tk):
             lab = tk.Label(box, text="—", bg=CARD, fg=TEXT, font=(FONT, 9, "bold"))
             lab.pack(anchor="w")
             self.stat_labels[key] = lab
+
+    def preview_pitch(self) -> None:
+        """按当前文本与参数算一次音高，画在预览区。"""
+        if getattr(self, "_previewing", False):
+            self._log("音高分析还在跑，稍等一下。")
+            return
+        text = self.text.get("1.0", "end-1c")
+        if not text.strip():
+            messagebox.showinfo("预览音高", "先写点文字再预览。")
+            return
+        if len(text) > 4000:
+            if not messagebox.askyesno(
+                    "预览音高",
+                    f"文本有 {len(text)} 字，分析可能要几秒。继续吗？"):
+                return
+        mode = self._mode()
+        options = self._voice_options()
+        bpm = self._bpm()
+        numerator, denominator = self._meter()
+        edits = self._active_edits(text) if mode == "chinese" else {}
+        dictionary = dict(self.dictionary) if mode == "chinese" else {}
+        self._previewing = True
+        self._log("正在分析音高…")
+
+        def worker() -> None:
+            try:
+                song = compose(text, options, bpm=bpm, numerator=numerator,
+                               denominator=denominator, input_mode=mode,
+                               edits=edits, dictionary=dictionary)
+            except Exception as exc:
+                self._post(self._preview_failed, exc)
+                return
+            self._post(self._draw_pitch, song)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _preview_failed(self, exc: Exception) -> None:
+        self._previewing = False
+        self._log(f"音高分析失败：{exc}")
+
+    def _draw_pitch(self, song: Song) -> None:
+        self._previewing = False
+        canvas = self.pitch_canvas
+        canvas.delete("all")
+        points = sorted(song.controls.get("P") or [], key=lambda p: p[0])
+        if not points or not song.notes:
+            self.info_hint.configure(text="没有可画的音高（文本里没有音节）",
+                                     fg="#8b93a7")
+            return
+        width = max(160, canvas.winfo_width())
+        height = max(80, canvas.winfo_height())
+        total = max(1, song.total_ticks)
+        pbs = song.options.pbs
+        notes = song.notes
+        sampled: list[tuple[int, float]] = []
+        lowest, highest = math.inf, -math.inf
+        idx = 0
+        for tick, value in points:
+            while idx + 1 < len(notes) and tick >= notes[idx].start + notes[idx].dur:
+                idx += 1
+            pitch = notes[idx].midi + value * pbs / 8192
+            sampled.append((tick, pitch))
+            lowest = min(lowest, pitch)
+            highest = max(highest, pitch)
+        if highest - lowest < 1.0:
+            middle = (highest + lowest) / 2
+            lowest, highest = middle - 0.5, middle + 0.5
+        pad = 10
+
+        def xy(tick: int, pitch: float) -> tuple[float, float]:
+            x = pad + (width - 2 * pad) * tick / total
+            y = height - pad - (height - 2 * pad) * (pitch - lowest) / (
+                highest - lowest)
+            return x, y
+
+        previous_phrase = None
+        for syl in song.syllables:
+            if syl.phrase == previous_phrase:
+                continue
+            previous_phrase = syl.phrase
+            x, _ = xy(int(getattr(syl, "_start_tick", 0)), lowest)
+            canvas.create_line(x, pad, x, height - pad, fill="#1b2330")
+        coords: list[float] = []
+        for tick, pitch in sampled:
+            x, y = xy(tick, pitch)
+            coords.extend((x, y))
+        if len(coords) >= 4:
+            canvas.create_line(*coords, fill=ACCENT, width=2)
+        canvas.create_text(pad, pad, anchor="nw",
+                           text=f"{lowest:.1f} – {highest:.1f} st",
+                           fill="#5f6a7d", font=(FONT, 7))
+        self.info_hint.configure(
+            text=f"音高预览：{len(song.notes)} 音节 · {song.duration_s:.2f}s\n"
+                 f"音域 {highest - lowest:.1f} 半音，竖线是换气点",
+            fg=ACCENT)
 
     def _build_log(self, parent) -> None:
         outer = tk.Frame(parent, bg=CARD, highlightbackground=LINE, highlightthickness=1)
@@ -814,11 +1041,28 @@ class VocaloidTTSApp(tk.Tk):
 
     def _log(self, message: str) -> None:
         ts = time.strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        self._append_log_file(line)
         self.log.configure(state="normal")
-        self.log.insert("end", f"[{ts}] {message}\n")
+        self.log.insert("end", line + "\n")
         self.log.see("end")
         self.log.configure(state="disabled")
         self.status.set(message)
+
+    def _append_log_file(self, line: str) -> None:
+        """Mirror the in-app log to disk so failures leave a trace."""
+        try:
+            path = localappdata_dir() / "log.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if path.stat().st_size > 1_000_000:
+                    path.replace(path.with_name("log.old.txt"))
+            except OSError:
+                pass
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except Exception:
+            pass
 
     # -------------------------------------------------------- editor location
     def _check_editor_startup(self) -> None:
@@ -985,6 +1229,12 @@ class VocaloidTTSApp(tk.Tk):
             return
         path = paths[0]
         suffix = Path(path).suffix.lower()
+        if suffix in (".vsqx", ".svip3", ".ustx", ".svip"):
+            messagebox.showinfo(
+                "这是工程文件",
+                f"{Path(path).name} 是已经生成的工程。\n\n"
+                "请用对应的编辑器打开它；这里只能导入文本（.txt / .text / .md）。")
+            return
         if suffix not in (".txt", ".text", ".md"):
             messagebox.showwarning(
                 "不支持的文件",
@@ -1001,15 +1251,9 @@ class VocaloidTTSApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("无法读取文件", f"{p}\n\n{exc}")
             return
-        text = ""
-        for enc in ("utf-8-sig", "utf-16", "gb18030"):
-            try:
-                text = raw.decode(enc)
-                break
-            except Exception:
-                continue
+        text, encoding = decode_text(raw)
         if not text:
-            text = raw.decode("utf-8", errors="replace")
+            text, encoding = raw.decode("utf-8", errors="replace"), "utf-8 (replace)"
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         if len(text) > 200_000:
             text = text[:200_000]
@@ -1022,7 +1266,7 @@ class VocaloidTTSApp(tk.Tk):
         finally:
             self._loading = False
         self.char_count.configure(text=f"{len(text)} 字")
-        self._log(f"已导入文本：{p.name}（{len(text)} 字）")
+        self._log(f"已导入文本：{p.name}（{len(text)} 字，编码 {encoding}）")
 
     def _apply_preset(self, name: str) -> None:
         if self._mode() == "pinyin":
@@ -1062,6 +1306,7 @@ class VocaloidTTSApp(tk.Tk):
                 pass
         # Deliberately no compose/render here: sliders and typing must stay
         # responsive.  A song is built only by "生成 VSQX".
+        self._schedule_autosave()
 
     def _on_text_modified(self, event=None) -> None:
         if self._loading:
@@ -1071,6 +1316,232 @@ class VocaloidTTSApp(tk.Tk):
         self.text.edit_modified(False)
         content = self.text.get("1.0", "end").strip()
         self.char_count.configure(text=f"{len(content)} 字")
+        if self.edits.chars and not self.edits.matches(
+                self.text.get("1.0", "end-1c")):
+            self._log("文本已改动，之前的逐字纠音对不上了，生成时会被忽略。")
+        self._schedule_autosave()
+
+    # ------------------------------------------------------ 逐字纠音
+    def _text_offset(self, index: str) -> int:
+        """把 Tk 的 ``line.col`` 索引换成 0 起算的字符偏移。
+
+        ``Text.count`` 在起止相同时返回 ``None``，这里直接用取子串的方式算，
+        简单且在纠音这种低频路径上足够快。
+        """
+        return len(self.text.get("1.0", index))
+
+    def _selection_offsets(self) -> tuple[int, int]:
+        """返回选区的 [起, 止)；没有选区时取光标所在的一个字。"""
+        try:
+            start = self._text_offset(self.text.index("sel.first"))
+            end = self._text_offset(self.text.index("sel.last"))
+        except tk.TclError:
+            pos = self._text_offset(self.text.index("insert"))
+            return pos, pos + 1
+        return start, max(start + 1, end)
+
+    def edit_pronunciation(self) -> None:
+        """给选中的字逐个改拼音/声调。"""
+        content = self.text.get("1.0", "end-1c")
+        start, end = self._selection_offsets()
+        if start >= len(content):
+            messagebox.showinfo("纠音", "请先把光标放到要改的字上，或选中几个字。")
+            return
+        end = min(end, len(content))
+        if end - start > 24:
+            if not messagebox.askyesno(
+                    "纠音",
+                    f"选中了 {end - start} 个字，逐个改太累。\n"
+                    "先处理前 24 个，剩下的可以再选一次。继续吗？"):
+                return
+            end = start + 24
+        fragment = content[start:end]
+        auto: dict[int, tuple[str, int]] = {}
+        for syl in text_to_syllables(fragment):
+            if syl.src >= 0:
+                auto[syl.src] = (syl.pinyin, syl.tone)
+        self._pronunciation_dialog(start, fragment, auto)
+
+    def _pronunciation_dialog(self, start: int, fragment: str,
+                              auto: dict[int, tuple[str, int]]) -> None:
+        win = tk.Toplevel(self)
+        win.title("逐字纠音与修饰")
+        win.configure(bg=BG)
+        win.transient(self)
+        win.resizable(False, False)
+
+        tk.Label(win, text="拼音留空 = 保持自动读音；其余留「自动」= 跟规则走",
+                 bg=BG, fg=MUTED, font=(FONT, 9)).pack(anchor="w", padx=14,
+                                                       pady=(12, 8))
+        grid = tk.Frame(win, bg=BG)
+        grid.pack(fill="both", expand=True, padx=14)
+        for col, title in enumerate(("字", "拼音", "声调", "强调", "拉长", "停顿")):
+            tk.Label(grid, text=title, bg=BG, fg=MUTED, font=(FONT, 8)).grid(
+                row=0, column=col, sticky="w", padx=(0, 8))
+
+        rows = []
+        for i, ch in enumerate(fragment):
+            offset = start + i
+            current = self.edits.get(offset)
+            auto_py, auto_tone = auto.get(i, ("", 0))
+            py = current.pinyin if current and current.pinyin else auto_py
+            tone = current.tone if current and current.tone else auto_tone
+            tk.Label(grid, text=ch, bg=BG, fg=TEXT, font=(FONT, 12)).grid(
+                row=i + 1, column=0, sticky="w", pady=2)
+            py_var = tk.StringVar(value=py)
+            tk.Entry(grid, textvariable=py_var, width=9, bg=CARD2, fg=TEXT,
+                     insertbackground=ACCENT, relief="flat", font=(FONT, 9),
+                     highlightbackground=LINE, highlightthickness=1).grid(
+                row=i + 1, column=1, padx=(0, 8), pady=2, ipady=2)
+            tone_var = tk.StringVar(
+                value="自动" if not tone else ("轻声" if tone == 5 else str(tone)))
+            ttk.Combobox(grid, textvariable=tone_var, width=4, state="readonly",
+                         values=["自动", "1", "2", "3", "4", "轻声"],
+                         font=(FONT, 9)).grid(row=i + 1, column=2,
+                                              padx=(0, 8), pady=2)
+            stress_var = tk.StringVar(value=choice_label(
+                STRESS_CHOICES, current.stress if current else None))
+            ttk.Combobox(grid, textvariable=stress_var, width=9, state="readonly",
+                         values=[label for label, _ in STRESS_CHOICES],
+                         font=(FONT, 9)).grid(row=i + 1, column=3,
+                                              padx=(0, 8), pady=2)
+            dur_var = tk.StringVar(value=choice_label(
+                DUR_CHOICES, current.dur_scale if current else None))
+            ttk.Combobox(grid, textvariable=dur_var, width=8, state="readonly",
+                         values=[label for label, _ in DUR_CHOICES],
+                         font=(FONT, 9)).grid(row=i + 1, column=4,
+                                              padx=(0, 8), pady=2)
+            pause_var = tk.StringVar(value=choice_label(
+                PAUSE_CHOICES, current.pause_ms if current else None))
+            ttk.Combobox(grid, textvariable=pause_var, width=7, state="readonly",
+                         values=[label for label, _ in PAUSE_CHOICES],
+                         font=(FONT, 9)).grid(row=i + 1, column=5, pady=2)
+            rows.append((offset, ch, py_var, tone_var, stress_var, dur_var,
+                         pause_var, auto_py, auto_tone))
+
+        def apply() -> None:
+            changed = 0
+            for (offset, ch, py_var, tone_var, stress_var, dur_var, pause_var,
+                 auto_py, auto_tone) in rows:
+                pinyin = py_var.get().strip().lower()
+                label = tone_var.get()
+                tone = 0 if label == "自动" else (5 if label == "轻声" else int(label))
+                edit = CharEdit(
+                    char=ch,
+                    pinyin="" if pinyin == auto_py else pinyin,
+                    tone=0 if tone in (0, auto_tone) else tone,
+                    stress=choice_value(STRESS_CHOICES, stress_var.get()),
+                    dur_scale=choice_value(DUR_CHOICES, dur_var.get()),
+                    pause_ms=choice_value(PAUSE_CHOICES, pause_var.get()),
+                )
+                if not edit.is_empty():
+                    changed += 1
+                self.edits.set(offset, edit)
+            self.edits.take_snapshot(self.text.get("1.0", "end-1c"))
+            self._log(f"已更新 {len(rows)} 个字，其中 {changed} 个是覆盖")
+            win.destroy()
+
+        def reset() -> None:
+            for (offset, _ch, py_var, tone_var, stress_var, dur_var,
+                 pause_var, _ap, _at) in rows:
+                self.edits.set(offset, CharEdit())
+                py_var.set("")
+                tone_var.set("自动")
+                stress_var.set(STRESS_CHOICES[0][0])
+                dur_var.set(DUR_CHOICES[0][0])
+                pause_var.set(PAUSE_CHOICES[0][0])
+            self._log(f"已清除 {len(rows)} 个字的全部人工设置")
+
+        bar = tk.Frame(win, bg=BG)
+        bar.pack(fill="x", padx=14, pady=(10, 12))
+        self._button(bar, "全部恢复自动", reset, "ghost", 10).pack(side="left")
+        self._button(bar, "编辑词典…", self.manage_userdict, "ghost", 9).pack(
+            side="left", padx=(8, 0))
+        self._button(bar, "确定", apply, "primary", 10).pack(side="right")
+        self._button(bar, "取消", win.destroy, "ghost", 8).pack(
+            side="right", padx=(0, 6))
+
+    def manage_userdict(self) -> None:
+        """用户专名词典：词语 → 带声调拼音，跨项目共享。"""
+        win = tk.Toplevel(self)
+        win.title("用户词典")
+        win.configure(bg=BG)
+        win.geometry("520x400")
+        win.transient(self)
+
+        tk.Label(win, text="词语 → 带声调的拼音（如 重明 → chong2 ming2）",
+                 bg=BG, fg=MUTED, font=(FONT, 9)).pack(anchor="w", padx=14,
+                                                       pady=(12, 6))
+        body = tk.Frame(win, bg=BG)
+        body.pack(fill="both", expand=True, padx=14)
+        listbox = tk.Listbox(body, bg=CARD, fg=TEXT, selectbackground=ACCENT,
+                             selectforeground="#08211f", font=(FONT, 9),
+                             bd=0, highlightthickness=0)
+        listbox.pack(fill="both", expand=True)
+
+        def refresh() -> None:
+            listbox.delete(0, "end")
+            for word in sorted(self.dictionary):
+                listbox.insert("end", f"{word}  →  {self.dictionary[word]}")
+
+        def add() -> None:
+            word = simpledialog.askstring("添加词条", "词语：", parent=win)
+            if not word:
+                return
+            word = word.strip()
+            if not word:
+                return
+            reading = simpledialog.askstring(
+                "添加词条",
+                f"「{word}」怎么读？\n每个字一个带声调数字的拼音，如 chong2 ming2：",
+                parent=win)
+            if not reading:
+                return
+            parsed = parse_reading(reading)
+            if parsed is None or len(parsed) != len(word):
+                messagebox.showerror(
+                    "格式不对",
+                    "每个字都要有一个带声调数字的拼音，数量也要对得上。",
+                    parent=win)
+                return
+            self.dictionary[word] = " ".join(f"{py}{tone}"
+                                             for py, tone in parsed)
+            self._save_dictionary()
+            refresh()
+
+        def remove() -> None:
+            sel = listbox.curselection()
+            if not sel:
+                return
+            word = sorted(self.dictionary)[sel[0]]
+            self.dictionary.pop(word, None)
+            self._save_dictionary()
+            refresh()
+
+        bar = tk.Frame(win, bg=BG)
+        bar.pack(fill="x", padx=14, pady=(8, 12))
+        self._button(bar, "添加", add, "primary", 8).pack(side="left")
+        self._button(bar, "删除选中", remove, "ghost", 9).pack(
+            side="left", padx=(6, 0))
+        self._button(bar, "关闭", win.destroy, "ghost", 8).pack(side="right")
+        refresh()
+
+    def _save_dictionary(self) -> None:
+        try:
+            save_userdict(appdata_dir() / "userdict.json", self.dictionary)
+            self._log(f"用户词典已保存：{len(self.dictionary)} 条")
+        except Exception as exc:
+            self._log(f"用户词典保存失败：{exc}")
+            messagebox.showerror("保存失败", str(exc))
+
+    def _active_edits(self, text: str) -> dict[int, CharEdit]:
+        """取当前可用的纠音；文本改过就整体放弃，绝不错配。"""
+        if not self.edits.chars:
+            return {}
+        if not self.edits.matches(text):
+            self._log("文本与纠音快照不一致，本次生成忽略逐字纠音。")
+            return {}
+        return dict(self.edits.chars)
 
     def _voice_options(self) -> VoiceOptions:
         style = LABEL_TO_STYLE.get(self.style_var.get(), "read")
@@ -1112,8 +1583,9 @@ class VocaloidTTSApp(tk.Tk):
         self.stat_labels["dur"].configure(text=f"{song.duration_s:.2f}s")
         span = song.pitch_span
         self.stat_labels["range"].configure(text=f"{span[1]-span[0]:.1f} st")
-        top = max(song.notes, key=lambda n: n.midi)
-        self.stat_labels["peak"].configure(text=note_name(top.midi))
+        # Keep 最高音 consistent with 音域: both include the PIT curve, not
+        # just the note anchors.
+        self.stat_labels["peak"].configure(text=note_name(int(round(span[1]))))
         n5 = sum(1 for n in song.notes if n.syl.tone == 5)
         self.stat_labels["neutral"].configure(text=str(n5) if n5 else "—")
         self.stat_labels["size"].configure(text="—")
@@ -1124,7 +1596,11 @@ class VocaloidTTSApp(tk.Tk):
             messagebox.showwarning("没有文本", "请先输入要演唱的文字。")
             return False
         if not self.voicebanks:
-            messagebox.showerror("没有歌姬", "未检测到 VOCALOID4 声库。")
+            messagebox.showerror(
+                "没有歌姬",
+                "没有检测到可用的声库。\n\n"
+                "请点「歌姬」右侧的「＋ 添加文件夹」，选择声库根目录"
+                "（例如包含 .vvd 的文件夹）后再试。")
             return False
         return True
 
@@ -1143,34 +1619,79 @@ class VocaloidTTSApp(tk.Tk):
 
     def _update_bank_badge(self) -> None:
         if hasattr(self, "bank_pill"):
-            self.bank_pill.configure(text=self._bank_badge_text(self._current_voicebank()))
+            bank = self._current_voicebank()
+            text = self._bank_badge_text(bank) if bank else "  未检测到声库"
+            self.bank_pill.configure(text=text)
 
-    def _refresh_voicebanks(self, select_id: str | None = None) -> None:
-        old_id = select_id
-        if old_id is None and self.voicebanks:
+    def _refresh_voicebanks(self, select_id: str | None = None,
+                            force: bool = False) -> None:
+        """重新扫描声库；扫描在后台线程跑，这里立即返回。"""
+        self._start_voicebank_scan(select_id=select_id, force=force)
+
+    def _start_voicebank_scan(self, select_id: str | None = None,
+                              force: bool = False) -> None:
+        if self._scanning:
+            self._log("声库扫描还在进行，稍候再试。")
+            return
+        self._scanning = True
+        if hasattr(self, "vb_note"):
+            self.vb_note.configure(text="正在扫描声库…")
+        self._log("正在扫描声库…")
+
+        def worker() -> None:
             try:
-                old_id = self._current_voicebank().id
-            except Exception:
-                old_id = None
-        banks = detect_voicebanks()
+                banks = detect_voicebanks(use_cache=not force)
+            except Exception as exc:
+                self._post(self._scan_failed, exc)
+                return
+            self._post(self._scan_finished, banks, select_id)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _scan_failed(self, exc: Exception) -> None:
+        self._scanning = False
+        if hasattr(self, "vb_note"):
+            self.vb_note.configure(text="声库扫描失败；点“＋ 添加文件夹”手动指定")
+        self._log(f"声库扫描失败：{exc}")
+
+    def _scan_finished(self, banks: list[Voicebank],
+                       select_id: str | None = None) -> None:
+        self._scanning = False
         self.voicebanks = banks
         self.vb_combo["values"] = [v.label for v in banks]
-        idx = 0
-        if old_id:
-            for i, vb in enumerate(banks):
-                if vb.id == old_id:
-                    idx = i
-                    break
-        if banks:
-            self.vb_combo.current(idx)
-        self._update_bank_badge()
+        if select_id:
+            self._want_bank_id = select_id
+        self._restore_voicebank_selection()
         custom = get_voicebank_roots()
         extra = f"，自定义目录 {len(custom)} 个" if custom else ""
         self._log(f"声库扫描：{len(banks)} 个{extra}")
+        if hasattr(self, "vb_note"):
+            if banks:
+                self.vb_note.configure(text="找不到歌姬时，点“＋ 添加文件夹”指定声库目录")
+            else:
+                self.vb_note.configure(text="没有检测到声库；点“＋ 添加文件夹”指定声库目录")
+
+    def _restore_voicebank_selection(self) -> None:
+        """把记住的声库 id（或旧配置里的下标）落到下拉框上。
+
+        启动时扫描还没回来，所以选择要等扫描结束后再恢复一次。
+        """
+        if not self.voicebanks or not hasattr(self, "vb_combo"):
+            return
+        idx: int | None = None
+        if self._want_bank_id:
+            for i, vb in enumerate(self.voicebanks):
+                if vb.id == self._want_bank_id:
+                    idx = i
+                    break
+        if idx is None and self._want_bank_index is not None:
+            if 0 <= self._want_bank_index < len(self.voicebanks):
+                idx = self._want_bank_index
+        self.vb_combo.current(0 if idx is None else idx)
+        self._update_bank_badge()
 
     def rescan_voicebanks(self) -> None:
-        self._refresh_voicebanks()
-        self.vb_note.configure(text="已重新扫描；找不到时点“＋ 添加文件夹”指定声库目录")
+        self._refresh_voicebanks(force=True)
 
     def add_voicebank_folder(self) -> None:
         path = filedialog.askdirectory(
@@ -1178,12 +1699,27 @@ class VocaloidTTSApp(tk.Tk):
             mustexist=True)
         if not path:
             return
-        try:
-            found = scan_voicebank_folder(path)
-        except Exception as exc:
-            messagebox.showerror("扫描失败", str(exc))
-            return
+        self.vb_note.configure(text=f"正在扫描 {Path(path).name}…")
+        self._log(f"正在扫描声库目录：{path}")
+
+        def worker() -> None:
+            try:
+                found = scan_voicebank_folder(path)
+            except Exception as exc:
+                self._post(self._add_folder_failed, exc)
+                return
+            self._post(self._add_folder_done, path, found)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _add_folder_failed(self, exc: Exception) -> None:
+        self.vb_note.configure(text="扫描失败；可以换个目录再试")
+        self._log(f"扫描目录失败：{exc}")
+        messagebox.showerror("扫描失败", str(exc))
+
+    def _add_folder_done(self, path: str, found: list[Voicebank]) -> None:
         if not found:
+            self.vb_note.configure(text="这个文件夹里没有声库；换一个目录试试")
             messagebox.showwarning(
                 "没有发现声库",
                 "这个文件夹里没有找到 .vvd 声库文件。\n\n"
@@ -1201,107 +1737,292 @@ class VocaloidTTSApp(tk.Tk):
         else:
             messagebox.showinfo("目录已加入", "这些声库已经扫描到了，目录已保存。")
 
+    def manage_voicebank_roots(self) -> None:
+        win = tk.Toplevel(self)
+        win.title("声库扫描点位")
+        win.configure(bg=BG)
+        win.geometry("760x420")
+        win.transient(self)
+
+        tk.Label(win, text="已添加的声库目录（双击可编辑 bs/pc）", bg=BG, fg=TEXT,
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
+
+        body = tk.Frame(win, bg=BG)
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        scroll = tk.Scrollbar(body)
+        scroll.pack(side="right", fill="y")
+        listbox = tk.Listbox(body, bg=CARD, fg=TEXT, selectbackground=ACCENT,
+                             selectforeground="#08211f", font=(FONT, 9),
+                             yscrollcommand=scroll.set, bd=0, highlightthickness=0)
+        listbox.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=listbox.yview)
+
+        def refresh() -> None:
+            listbox.delete(0, "end")
+            for root in get_voicebank_roots():
+                bits = [root.path]
+                if root.bs is not None or root.pc is not None:
+                    bits.append(f"bs={root.bs if root.bs is not None else '?'}"
+                                f" pc={root.pc if root.pc is not None else '?'}")
+                if root.display:
+                    bits.append(f"显示={root.display}")
+                if not root.enabled:
+                    bits.append("（已禁用）")
+                listbox.insert("end", "  ·  ".join(bits))
+
+        def selected_root() -> VoicebankRoot | None:
+            sel = listbox.curselection()
+            if not sel:
+                return None
+            roots = get_voicebank_roots()
+            if sel[0] >= len(roots):
+                return None
+            return roots[sel[0]]
+
+        def remove() -> None:
+            root = selected_root()
+            if root is None:
+                return
+            remove_voicebank_root(root.path)
+            refresh()
+            self._refresh_voicebanks()
+            self._log(f"已移除扫描点位：{root.path}")
+
+        def edit() -> None:
+            root = selected_root()
+            if root is None:
+                return
+            current = ""
+            if root.bs is not None or root.pc is not None:
+                current = f"{root.bs if root.bs is not None else 0}," \
+                          f"{root.pc if root.pc is not None else 0}"
+            value = simpledialog.askstring(
+                "覆盖 bs/pc", "输入 bs,pc（例如 4,0）；留空表示自动推断：",
+                initialvalue=current, parent=win)
+            if value is None:
+                return
+            value = value.strip()
+            if value:
+                try:
+                    parts = value.replace("，", ",").split(",")
+                    bs, pc = int(parts[0]), int(parts[1])
+                except (ValueError, IndexError):
+                    messagebox.showerror("格式不对", "请输入 bs,pc，例如 4,0。",
+                                         parent=win)
+                    return
+                add_voicebank_root(root.path, bs=bs, pc=pc)
+            else:
+                add_voicebank_root(root.path)
+            refresh()
+            self._refresh_voicebanks()
+            self._log(f"已更新点位覆盖：{root.path}")
+
+        def export() -> None:
+            path = filedialog.asksaveasfilename(
+                parent=win, title="导出扫描点位", defaultextension=".json",
+                initialfile="voicebank_roots.json",
+                filetypes=[("JSON", "*.json"), ("所有文件", "*.*")])
+            if not path:
+                return
+            export_voicebank_roots(path)
+            self._log(f"已导出声库点位：{path}")
+
+        def import_() -> None:
+            path = filedialog.askopenfilename(
+                parent=win, title="导入扫描点位",
+                filetypes=[("JSON", "*.json"), ("所有文件", "*.*")])
+            if not path:
+                return
+            try:
+                import_voicebank_roots(path)
+            except ValueError as exc:
+                messagebox.showerror("导入失败", str(exc), parent=win)
+                return
+            refresh()
+            self._refresh_voicebanks()
+            self._log(f"已导入声库点位：{path}")
+
+        bar = tk.Frame(win, bg=BG)
+        bar.pack(fill="x", padx=14, pady=(0, 12))
+        for text, command in (("移除选中", remove), ("编辑 bs/pc", edit),
+                              ("导入…", import_), ("导出…", export)):
+            self._button(bar, text, command, "ghost", 8).pack(side="left", padx=(0, 8))
+        listbox.bind("<Double-Button-1>", lambda e: edit())
+        refresh()
+
     def _on_voicebank_change(self) -> None:
         vb = self._current_voicebank()
         self._update_bank_badge()
+        if vb is None:
+            return
+        self._want_bank_id = vb.id
         self._log(f"已选择声库：{vb.label}  (bs={vb.bs}, pc={vb.pc})")
 
-    def _current_voicebank(self) -> Voicebank:
+    def _current_voicebank(self) -> Voicebank | None:
+        if not self.voicebanks:
+            return None
         idx = self.vb_combo.current()
         if idx < 0 or idx >= len(self.voicebanks):
             idx = 0
         return self.voicebanks[idx]
 
     def generate(self, open_after: bool = False, silent: bool = False,
-                 fmt: str | None = None) -> str | None:
+                 fmt: str | None = None) -> None:
+        if getattr(self, "_busy", False):
+            self._log("上一次生成还没结束，请稍候。")
+            return
         if not self._validate():
-            return None
+            return
         fmt = "vsqx" if open_after else (fmt or self.export_format)
         if fmt not in FORMATS:
             fmt = "vsqx"
         meta = FORMATS[fmt]
-        try:
-            self.config(cursor="watch")
-            self.update_idletasks()
-            mode = self._mode()
-            song = compose(self.text.get("1.0", "end").strip(),
-                           self._voice_options(), bpm=self._bpm(),
-                           numerator=self._meter()[0],
-                           denominator=self._meter()[1], input_mode=mode)
-            if not song.notes:
-                raise ValueError("没有解析出可演唱的音节")
-            self.song = song
-            self.export_format = fmt
-            out_dir = default_output_dir()
-            prefix = meta["prefix"]
-            if fmt == "vsqx" and mode == "pinyin":
-                prefix = "VocaloidTTS_pinyin"
-            default = out_dir / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}{meta['extension']}"
-            path = filedialog.asksaveasfilename(
-                title=f"保存 {meta['short']} 工程",
-                initialdir=str(out_dir),
-                initialfile=default.name,
-                defaultextension=meta["extension"],
-                filetypes=[meta["filetype"], ("所有文件", "*.*")],
-            )
-            if not path:
-                return None
-            stamp = f"{datetime.now():%m-%d %H:%M}"
-            title = f"VocaloidTTS Pinyin {stamp}" if mode == "pinyin" else f"VocaloidTTS {stamp}"
-            if fmt == "vsqx":
-                path = write_vsqx(song, path, self._current_voicebank(), title=title)
-                self.last_job = write_job(song, default_job_path(), title=title)
-            elif fmt == "svip3":
-                path = write_svip3(song, path)
-                self.last_job = None
-            elif fmt == "ustx":
-                path = write_ustx(song, path)
-                self.last_job = None
-            else:
-                path = write_svip(song, path)
-                self.last_job = None
-            self.last_path = path
-            self.path_label.configure(text=Path(path).name, fg=ACCENT)
-            self._update_stats()
-            self.stat_labels["size"].configure(text=f"{Path(path).stat().st_size/1024:.0f} KB")
+        mode = self._mode()
+        out_dir = default_output_dir()
+        prefix = meta["prefix"]
+        if fmt == "vsqx" and mode == "pinyin":
+            prefix = "VocaloidTTS_pinyin"
+        default = out_dir / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}{meta['extension']}"
+        path = filedialog.asksaveasfilename(
+            title=f"保存 {meta['short']} 工程",
+            initialdir=str(out_dir),
+            initialfile=default.name,
+            defaultextension=meta["extension"],
+            filetypes=[meta["filetype"], ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        bank = self._current_voicebank()
+        if fmt == "vsqx" and bank is None:
+            messagebox.showerror("没有歌姬", "请先添加声库。")
+            return
+        # 用 end-1c 而不是 strip()：首部空格被删会让纠音偏移整体错位
+        text = self.text.get("1.0", "end-1c")
+        edits = self._active_edits(text) if mode == "chinese" else {}
+        dictionary = dict(self.dictionary) if mode == "chinese" else {}
+        options = self._voice_options()
+        bpm = self._bpm()
+        numerator, denominator = self._meter()
+        stamp = f"{datetime.now():%m-%d %H:%M}"
+        title = f"VocaloidTTS Pinyin {stamp}" if mode == "pinyin" else f"VocaloidTTS {stamp}"
+        self.export_format = fmt
+        self._busy = True
+        self._cancel = False
+        self.config(cursor="watch")
+        self.status.set(f"正在生成 {meta['short']}…")
+        self._show_progress()
+        self._log(f"开始生成 {meta['short']}：{Path(path).name}")
+
+        # The callback hops back to the main thread; Reporter throttles it to
+        # about 20 updates a second, so the queue never piles up.
+        reporter = Reporter(
+            on_progress=lambda stage, frac: self._post(self._set_progress, frac),
+            should_cancel=lambda: self._cancel)
+
+        def worker() -> None:
             try:
-                self.info_hint.configure(
-                    text=f"已生成 {meta['short']}\n\n{Path(path).name}\n\n"
-                         f"{len(song.notes)} 音节 · {song.duration_s:.2f}s\n"
-                         f"{song.bpm:.0f} BPM · {song.numerator}/{song.denominator}",
-                    fg=ACCENT)
-            except Exception:
-                pass
-            self._log(f"已生成 {meta['short']}：{path}")
-            if fmt == "vsqx":
-                self._log(f"插件数据已刷新：{self.last_job}")
-            elif fmt == "svip3":
-                self._log("X Studio 歌手：洛天依（临时借用陈水若 ID，可在 X Studio 里改选歌手）")
-            elif fmt == "ustx":
-                self._log("OpenUTAU 歌手为占位符；打开工程后请选择实际声库。")
-            if not silent:
+                song = compose(text, options, bpm=bpm, numerator=numerator,
+                               denominator=denominator, input_mode=mode,
+                               reporter=reporter.child(0.0, 0.88),
+                               edits=edits, dictionary=dictionary)
+                if not song.notes:
+                    raise ValueError("没有解析出可演唱的音节")
+                reporter.stage("write", 0.90)
+                job_path = None
+                written = path
                 if fmt == "vsqx":
-                    detail = ("V4 或 V5 中按 Ctrl+O 打开即可试听。\n"
-                              "PIT / DYN / BRI 等参数已写入。")
+                    written = write_vsqx(song, path, bank, title=title)
+                    try:
+                        job_path = write_job(song, default_job_path(), title=title)
+                    except Exception as exc:
+                        self._post(self._log,
+                                   f"插件数据写入失败（工程已生成）：{exc}")
                 elif fmt == "svip3":
-                    detail = ("在 X Studio 3 中打开即可试听。\n"
-                              "歌手 ID 临时借用内置女声，轨道名保持“洛天依”。")
+                    written = write_svip3(song, path)
                 elif fmt == "ustx":
-                    detail = ("在 OpenUTAU 中打开，选择实际声库后即可试听。\n"
-                              "歌手字段是占位符，不会自动绑定声库。")
+                    written = write_ustx(song, path)
                 else:
-                    detail = "OpenSVIP JSON 工程，可交给 OpenSVIP 转换器继续处理。"
-                messagebox.showinfo(f"生成 {meta['short']} 成功",
-                                    f"已生成 {meta['short']} 工程：\n{path}\n\n{detail}")
-            if open_after:
-                self._open_in_v4(path)
-            return path
-        except Exception as exc:
-            messagebox.showerror("生成失败", f"{exc}\n\n{traceback.format_exc()}")
-            self._log(f"生成失败：{exc}")
-            return None
-        finally:
-            self.config(cursor="")
+                    written = write_svip(song, path)
+                reporter.stage("write", 1.0)
+                payload = {"song": song, "path": written, "fmt": fmt,
+                           "meta": meta, "open_after": open_after,
+                           "silent": silent, "job_path": job_path}
+                self._post(self._finish_generate, payload)
+            except Cancelled:
+                self._post(self._finish_generate, None)
+            except Exception as exc:
+                self._post(self._fail_generate, exc)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_generate(self, payload: dict | None) -> None:
+        self._busy = False
+        self.config(cursor="")
+        self._hide_progress()
+        if payload is None:
+            self.status.set("已取消")
+            self._log("生成已取消。")
+            return
+        song = payload["song"]
+        path = payload["path"]
+        fmt = payload["fmt"]
+        meta = payload["meta"]
+        job_path = payload["job_path"]
+        self.song = song
+        self.last_path = path
+        self.last_job = job_path
+        self.path_label.configure(text=Path(path).name, fg=ACCENT)
+        self._update_stats()
+        try:
+            self.stat_labels["size"].configure(
+                text=f"{Path(path).stat().st_size/1024:.0f} KB")
+        except Exception:
+            pass
+        try:
+            self.info_hint.configure(
+                text=f"已生成 {meta['short']}\n\n{Path(path).name}\n\n"
+                     f"{len(song.notes)} 音节 · {song.duration_s:.2f}s\n"
+                     f"{song.bpm:.0f} BPM · {song.numerator}/{song.denominator}",
+                fg=ACCENT)
+        except Exception:
+            pass
+        self.status.set(f"已生成 {meta['short']}")
+        self._log(f"已生成 {meta['short']}：{path}")
+        self._remember_recent(path)
+        if fmt == "vsqx" and job_path:
+            self._log(f"插件数据已刷新：{job_path}")
+        elif fmt == "svip3":
+            self._log("X Studio 歌手：洛天依（临时借用陈水若 ID，可在 X Studio 里改选歌手）")
+        elif fmt == "ustx":
+            self._log("OpenUTAU 歌手为占位符；打开工程后请选择实际声库。")
+        if not payload["silent"]:
+            if fmt == "vsqx":
+                detail = ("V4 或 V5 中按 Ctrl+O 打开即可试听。\n"
+                          "PIT / DYN / BRI 等参数已写入。")
+            elif fmt == "svip3":
+                detail = ("在 X Studio 3 中打开即可试听。\n"
+                          "歌手 ID 临时借用内置女声，轨道名保持“洛天依”。")
+            elif fmt == "ustx":
+                detail = ("在 OpenUTAU 中打开，选择实际声库后即可试听。\n"
+                          "歌手字段是占位符，不会自动绑定声库。")
+            else:
+                detail = "OpenSVIP JSON 工程，可交给 OpenSVIP 转换器继续处理。"
+            messagebox.showinfo(f"生成 {meta['short']} 成功",
+                                f"已生成 {meta['short']} 工程：\n{path}\n\n{detail}")
+        if payload["open_after"]:
+            self._open_in_editor(path)
+
+    def _fail_generate(self, exc: Exception) -> None:
+        self._busy = False
+        self.config(cursor="")
+        self._hide_progress()
+        self.status.set("生成失败")
+        # A bad pinyin token is a user mistake, not a crash: show the message,
+        # keep the traceback for the log only.
+        detail = str(exc) if isinstance(exc, ValueError) else \
+            f"{exc}\n\n{traceback.format_exc()}"
+        messagebox.showerror("生成失败", detail)
+        self._log(f"生成失败：{exc}")
 
     def generate_and_open(self) -> None:
         target = self._editor_target()
@@ -1318,9 +2039,7 @@ class VocaloidTTSApp(tk.Tk):
                     return
             else:
                 return
-        path = self.generate(open_after=False, silent=True, fmt="vsqx")
-        if path:
-            self._open_in_editor(path)
+        self.generate(open_after=True, silent=True, fmt="vsqx")
 
     def _open_in_editor(self, path: str) -> None:
         from .v4bridge import open_vsqx
@@ -1331,7 +2050,7 @@ class VocaloidTTSApp(tk.Tk):
 
         def worker():
             ok, msg = open_vsqx(path, target=target)
-            self.after(0, lambda: self._after_open(ok, msg))
+            self._post(self._after_open, ok, msg)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1341,10 +2060,21 @@ class VocaloidTTSApp(tk.Tk):
         if ok:
             self._log(f"已载入编辑器（{msg}），按空格试听；File > Export 可导出 WAV。")
             self.status.set("已载入 VOCALOID4/5")
-        else:
-            self._log(msg)
-            messagebox.showwarning("载入 V4/V5",
-                                   f"{msg}\n\n请手动在 V4/V5 中按 Ctrl+O 打开：\n{self.last_path}")
+            return
+        self._log(f"载入失败：{msg}")
+        self.status.set("载入失败")
+        path = self.last_path
+        if not path:
+            messagebox.showwarning("载入失败", msg)
+            return
+        folder = Path(path).parent
+        if messagebox.askyesno(
+                "载入失败",
+                f"{msg}\n\n文件位置：\n{folder}\n\n现在打开这个文件夹吗？"):
+            try:
+                os.startfile(folder)
+            except Exception as exc:
+                self._log(f"打开文件夹失败：{exc}")
 
     def install_plugin(self) -> None:
         if not v4_available():
@@ -1386,12 +2116,162 @@ class VocaloidTTSApp(tk.Tk):
             "之后即可在 任务(J) → 任务插件 中运行。",
         )
 
+    def _remember_recent(self, path: str) -> None:
+        try:
+            resolved = str(Path(path).resolve())
+        except Exception:
+            resolved = str(path)
+        self.recent = [p for p in self.recent if p != resolved]
+        self.recent.insert(0, resolved)
+        del self.recent[10:]
+
+    def _open_recent(self, path: str) -> None:
+        if not Path(path).is_file():
+            messagebox.showwarning("文件不存在", f"{path}\n\n可能已被移动或删除。")
+            self.recent = [p for p in self.recent if p != path]
+            return
+        try:
+            os.startfile(path)
+            self._log(f"已打开最近工程：{path}")
+        except Exception as exc:
+            messagebox.showerror("打开失败", str(exc))
+
     def open_output_folder(self) -> None:
         path = Path(self.last_path).parent if self.last_path else default_output_dir()
         try:
             os.startfile(path)
         except Exception as exc:
             messagebox.showerror("打开失败", str(exc))
+
+    # ---------------------------------------------------------------- project
+    def _collect_project(self) -> Project:
+        numerator, denominator = self._meter()
+        return Project(
+            text=self.text.get("1.0", "end-1c"),
+            mode=self._mode(),
+            bpm=self._bpm(),
+            numerator=numerator,
+            denominator=denominator,
+            options=self._voice_options(),
+            edits=self.edits,
+        )
+
+    def _apply_project(self, project: Project) -> None:
+        self._loading = True
+        try:
+            self.text.delete("1.0", "end")
+            self.text.insert("1.0", project.text)
+            self.text.edit_modified(False)
+        finally:
+            self._loading = False
+        self.char_count.configure(text=f"{len(project.text.strip())} 字")
+        self.mode_var.set("拼音输入" if project.mode == "pinyin" else "中文文本")
+        self.bpm_var.set(self._fmt_num(project.bpm))
+        self.num_var.set(str(project.numerator))
+        self.den_var.set(str(project.denominator))
+        self._apply_voice_options(project.options)
+        self.edits = project.edits
+        self._on_option_change()
+
+    def _apply_voice_options(self, options: VoiceOptions) -> None:
+        if options.style in STYLE_LABELS:
+            self.style_var.set(STYLE_LABELS[options.style])
+        values = {
+            "pitch": options.pitch,
+            "tone2": options.tone2_pitch,
+            "tone3": options.tone3_pitch,
+            "tone4": options.tone4_pitch,
+            "tone5": options.tone5_pitch,
+            "rate": options.rate,
+            "tone": options.tone_strength,
+            "energy": options.energy,
+            "pause": options.pause_scale,
+            "breath": options.breath,
+            "vibrato": options.vibrato,
+            "gender": options.gender,
+        }
+        for key, value in values.items():
+            if key in self.sliders:
+                try:
+                    self.sliders[key][0].set(value)
+                except Exception:
+                    pass
+        self.seed_var.set(str(options.seed))
+
+    def save_project_dialog(self) -> None:
+        project = self._collect_project()
+        if not project.text.strip():
+            messagebox.showwarning("没有内容", "先写点文字再保存项目。")
+            return
+        path = filedialog.asksaveasfilename(
+            title="保存项目",
+            defaultextension=SUFFIX,
+            initialfile=f"VocaloidTTS_{datetime.now():%Y%m%d_%H%M%S}{SUFFIX}",
+            filetypes=[("VocaloidTTS 项目", f"*{SUFFIX}"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            save_project(Path(path), project)
+        except Exception as exc:
+            messagebox.showerror("保存失败", str(exc))
+            return
+        self.project_path = path
+        self._log(f"项目已保存：{path}")
+
+    def open_project_dialog(self) -> None:
+        path = filedialog.askopenfilename(
+            title="打开项目",
+            filetypes=[("VocaloidTTS 项目", f"*{SUFFIX}"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            project = load_project(Path(path))
+        except ValueError as exc:
+            messagebox.showerror("打开失败", str(exc))
+            return
+        self._apply_project(project)
+        self.project_path = path
+        self._log(f"已打开项目：{path}（{len(project.text)} 字，"
+                  f"{len(project.edits.chars)} 处人工设置）")
+
+    def _autosave_path(self) -> Path:
+        return appdata_dir() / "autosave.vttsproj"
+
+    def _schedule_autosave(self) -> None:
+        if getattr(self, "_loading", False):
+            return
+        job = getattr(self, "_autosave_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._autosave_job = self.after(2500, self._autosave_now)
+
+    def _autosave_now(self) -> None:
+        self._autosave_job = None
+        try:
+            save_project(self._autosave_path(), self._collect_project())
+        except Exception as exc:
+            self._log(f"自动保存失败：{exc}")
+
+    def _restore_autosave(self) -> None:
+        path = self._autosave_path()
+        if not path.exists():
+            return
+        try:
+            project = load_project(path)
+        except ValueError as exc:
+            self._log(f"自动恢复失败：{exc}")
+            return
+        if not project.text.strip():
+            return
+        current = self.text.get("1.0", "end-1c")
+        if project.text == current:
+            return
+        self._apply_project(project)
+        self._log(f"已恢复上次编辑的内容（{len(project.text)} 字，"
+                  f"{len(project.edits.chars)} 处人工设置）")
 
     # --------------------------------------------------------------- settings
     def _settings_path(self) -> Path:
@@ -1430,8 +2310,8 @@ class VocaloidTTSApp(tk.Tk):
             "vibrato": self.sliders["vibrato"][0].get(),
             "gender": self.sliders["gender"][0].get(),
             "seed": self.seed_var.get(),
-            "voicebank": self.vb_combo.current(),
-            "voicebank_id": self._current_voicebank().id,
+            "voicebank_id": (bank.id if (bank := self._current_voicebank()) else ""),
+            "recent": self.recent[:10],
         }
         try:
             with open(self._settings_path(), "w", encoding="utf-8") as f:
@@ -1439,66 +2319,97 @@ class VocaloidTTSApp(tk.Tk):
         except Exception:
             pass
 
+    def _safe_apply(self, label: str, func) -> None:
+        try:
+            func()
+        except Exception as exc:
+            self._log(f"设置项 {label} 恢复失败：{exc}")
+
     def _apply_settings(self) -> None:
         s = self.settings
         if not s:
             return
+        recent = s.get("recent")
+        if isinstance(recent, list):
+            self.recent = [str(p) for p in recent if isinstance(p, str)][:10]
         try:
-            vb_id = s.get("voicebank_id")
-            if vb_id:
-                for i, vb in enumerate(self.voicebanks):
-                    if vb.id == vb_id:
-                        self.vb_combo.current(i)
-                        break
-            elif s.get("voicebank") is not None and 0 <= int(s["voicebank"]) < len(self.voicebanks):
-                self.vb_combo.current(int(s["voicebank"]))
-            self._update_bank_badge()
-            # v1 saved a much flatter tone; start v2 users on the new defaults
             schema = int(s.get("schema", 1))
-            if schema < 2:
-                return
-            if s.get("style") in STYLE_LABELS.values():
-                self.style_var.set(s["style"])
-            if "bpm" in s:
-                self.bpm_var.set(self._fmt_num(s["bpm"]))
-            if "numerator" in s:
-                self.num_var.set(str(s["numerator"]))
-            if "denominator" in s:
-                self.den_var.set(str(s["denominator"]))
-            if s.get("export_format") in FORMATS:
-                self.export_format = s["export_format"]
-            if s.get("editor_target") in ("V4", "V5"):
-                self.target_var.set(s["editor_target"])
-            for key in ("pitch", "tone2", "tone3", "tone4", "tone5", "rate",
-                        "tone", "energy", "pause", "breath", "vibrato", "gender"):
-                if key == "pitch" and schema < 4:
-                    # v1.5 redefines pitch as the first-tone anchor (G3 default)
-                    continue
-                if key in s and key in self.sliders:
-                    value = float(s[key])
-                    # v1.8 switches to V4's C3=60 octave labels and raises
-                    # the old low register by one octave.
-                    if schema < 6 and key in ("pitch", "tone2", "tone3", "tone4", "tone5") and value < 64:
-                        value += 12
-                    self.sliders[key][0].set(value)
-            if "seed" in s:
-                self.seed_var.set(str(s["seed"]))
-            if s.get("mode") in ("中文文本", "拼音输入"):
-                self.mode_var.set(s["mode"])
-                if self._mode() == "pinyin":
-                    self.hint_label.configure(
-                        text="空格分隔拼音，数字标声调：ni3 hao3 shi4 jie4；可用 ni3|n_i 覆盖音素。")
-                    # text content is not persisted, so start with a valid
-                    # pinyin sample instead of the Chinese default
-                    self._loading = True
-                    self.text.delete("1.0", "end")
-                    self.text.insert("1.0", PINYIN_PRESETS["自然朗读"][1])
-                    self.text.edit_modified(False)
-                    self._loading = False
-                    self.char_count.configure(text=f"{len(PINYIN_PRESETS['自然朗读'][1])} 字")
-            self._on_option_change()
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            schema = 1
+        self._safe_apply("声库", lambda: self._apply_voicebank_setting(s))
+        # v1 saved a much flatter tone; start v2 users on the new defaults
+        if schema < 2:
+            return
+        self._safe_apply("风格与速度", lambda: self._apply_transport_setting(s))
+        self._safe_apply("滑条", lambda: self._apply_slider_setting(s, schema))
+        self._safe_apply("种子", lambda: self._apply_seed_setting(s))
+        self._safe_apply("输入模式", lambda: self._apply_mode_setting(s))
+        self._safe_apply("界面刷新", self._on_option_change)
+
+    def _apply_voicebank_setting(self, s: dict) -> None:
+        vb_id = s.get("voicebank_id")
+        if vb_id:
+            self._want_bank_id = str(vb_id)
+        elif s.get("voicebank") is not None:
+            try:
+                self._want_bank_index = int(s["voicebank"])
+            except (TypeError, ValueError):
+                self._want_bank_index = None
+        # 扫描是异步的：列表还没回来时这里什么也不做，扫描结束后
+        # _scan_finished 会再调一次。
+        self._restore_voicebank_selection()
+
+    def _apply_transport_setting(self, s: dict) -> None:
+        if s.get("style") in STYLE_LABELS.values():
+            self.style_var.set(s["style"])
+        if "bpm" in s:
+            self.bpm_var.set(self._fmt_num(s["bpm"]))
+        if "numerator" in s:
+            self.num_var.set(str(s["numerator"]))
+        if "denominator" in s:
+            self.den_var.set(str(s["denominator"]))
+        if s.get("export_format") in FORMATS:
+            self.export_format = s["export_format"]
+        if s.get("editor_target") in ("V4", "V5"):
+            self.target_var.set(s["editor_target"])
+
+    def _apply_slider_setting(self, s: dict, schema: int) -> None:
+        for key in ("pitch", "tone2", "tone3", "tone4", "tone5", "rate",
+                    "tone", "energy", "pause", "breath", "vibrato", "gender"):
+            if key == "pitch" and schema < 4:
+                # v1.5 redefines pitch as the first-tone anchor (G3 default)
+                continue
+            if key in s and key in self.sliders:
+                value = float(s[key])
+                # v1.8 switches to V4's C3=60 octave labels and raises the
+                # old low register by one octave.
+                if schema < 6 and key in ("pitch", "tone2", "tone3", "tone4",
+                                          "tone5") and value < 64:
+                    value += 12
+                self.sliders[key][0].set(value)
+
+    def _apply_seed_setting(self, s: dict) -> None:
+        if "seed" in s:
+            self.seed_var.set(str(s["seed"]))
+
+    def _apply_mode_setting(self, s: dict) -> None:
+        if s.get("mode") not in ("中文文本", "拼音输入"):
+            return
+        self.mode_var.set(s["mode"])
+        if self._mode() != "pinyin":
+            return
+        self.hint_label.configure(
+            text="空格分隔拼音，数字标声调：ni3 hao3 shi4 jie4；可用 ni3|n_i 覆盖音素。")
+        # text content is not persisted, so start with a valid pinyin sample
+        # instead of the Chinese default
+        self._loading = True
+        try:
+            self.text.delete("1.0", "end")
+            self.text.insert("1.0", PINYIN_PRESETS["自然朗读"][1])
+            self.text.edit_modified(False)
+        finally:
+            self._loading = False
+        self.char_count.configure(text=f"{len(PINYIN_PRESETS['自然朗读'][1])} 字")
 
     def _on_close(self) -> None:
         if self._quitting:
@@ -1547,7 +2458,10 @@ def main() -> None:
             out = tmp / "VocaloidTTS_selftest.vsqx"
             song = compose("你好，世界。今天天气真不错！",
                            VoiceOptions(style="read", seed=42))
-            write_vsqx(song, out, detect_voicebanks()[0], title="VocaloidTTS Selftest")
+            banks = detect_voicebanks()
+            bank = banks[0] if banks else Voicebank(
+                "BK8H76TAEHXWSKDB", "LuoTianyi", "洛天依 · 中文 Meng", 4, 0)
+            write_vsqx(song, out, bank, title="VocaloidTTS Selftest")
             write_job(song, default_job_path(), title="VocaloidTTS Selftest")
             (tmp / "VocaloidTTS_selftest.ok").write_text(
                 f"ok {len(song.notes)} notes {out}\n", encoding="utf-8")

@@ -1,4 +1,4 @@
-"""Exporters for VTTS 1.1: X Studio 3 (.svip3), OpenUTAU (.ustx), OpenSVIP (.svip).
+"""Exporters for VocaloidTTS: X Studio 3 (.svip3), OpenUTAU (.ustx), OpenSVIP (.svip).
 
 The writers are deliberately dependency-free: X Studio's protobuf wire format is
 small enough to emit by hand, and both OpenUTAU and OpenSVIP documents are
@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import math
 import struct
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 from typing import Iterable
 
+from . import __version__
+from .atomicio import atomic_write_bytes, atomic_write_text
 from .prosody import Note, Song
 
 # X Studio 3 does not expose a public 洛天依 UUID in the OpenSVIP singer table.
@@ -66,23 +69,46 @@ def _has_han(text: str) -> bool:
 
 
 def lyric_for(note: Note) -> str:
-    """X Studio wants a Chinese lyric; pinyin input falls back to 啦."""
+    """One lyric decision shared by every exporter.
+
+    Chinese input keeps the original character; pinyin input (no Han) keeps the
+    pinyin syllable, so a pinyin project does not turn every note into 啦.
+    """
     text = getattr(note.syl, "text", "") or ""
-    return text if _has_han(text) else "啦"
+    if _has_han(text):
+        return text
+    return note.lyric or text or "啦"
 
 
 def pronunciation_for(note: Note) -> str:
     return note.lyric or getattr(note.syl, "phonemes", "") or "a"
 
 
-def pit_cents(song: Song, note: Note) -> list[tuple[int, float]]:
+class _PitchIndex:
+    """A per-export time index, preserving the source order within each note."""
+
+    def __init__(self, points: Iterable[tuple[int, int]]):
+        self.points = list(points)
+        self.order = sorted(range(len(self.points)), key=lambda i: self.points[i][0])
+        self.ticks = [self.points[i][0] for i in self.order]
+
+    def between(self, start: int, end: int) -> Iterable[tuple[int, int]]:
+        left = bisect_left(self.ticks, start)
+        right = bisect_right(self.ticks, end)
+        # Sorted input already has increasing indices. Sorting these indices
+        # also preserves the former scan's behavior for out-of-order controls.
+        return (self.points[i] for i in sorted(self.order[left:right]))
+
+
+def pit_cents(song: Song, note: Note, *,
+              pitch_index: _PitchIndex | None = None) -> list[tuple[int, float]]:
     """Return note-relative pitch points as (tick, cents)."""
-    raw = song.controls.get("P", [])
+    if pitch_index is None:
+        pitch_index = _PitchIndex(song.controls.get("P", []))
     pts: list[tuple[int, float]] = []
-    for t, v in raw:
-        if note.start <= t <= note.start + note.dur:
-            semis = float(v) * 12.0 / 8192.0
-            pts.append((int(t - note.start), semis * 100.0))
+    for t, v in pitch_index.between(note.start, note.start + note.dur):
+        semis = float(v) * song.options.pbs / 8192.0
+        pts.append((int(t - note.start), semis * 100.0))
     if not pts:
         pts = [(0, 0.0), (max(1, note.dur), 0.0)]
     if pts[0][0] > 0:
@@ -173,12 +199,14 @@ def _xs3_note(n: Note) -> bytes:
 
 def _xs3_pitch_points(song: Song, numerator: int = 4, denominator: int = 4) -> list[tuple[int, float]]:
     points: list[tuple[int, float]] = []
+    pitch_index = _PitchIndex(song.controls.get("P", []))
     # Keep pitch positions in the same tick space as Xs3Note.StartPosition.
     # OpenSVIP's converter subtracts FirstBarLength for its own project model,
     # but VTTS writes notes and pitch into one self-consistent pattern.
     for n in song.notes:
-        for x, cents in pit_cents(song, n):
-            points.append((max(0, n.start + x), cents / 100.0 + 0.5))
+        for x, cents in pit_cents(song, n, pitch_index=pitch_index):
+            # X Studio stores absolute MIDI pitch, with a half-semitone offset.
+            points.append((max(0, n.start + x), n.midi + cents / 100.0 + 0.5))
     if not points:
         points = [(0, 0.5)]
     points.sort()
@@ -236,8 +264,7 @@ def write_svip3(song: Song, path: str, singer_id: str = XSTUDIO_LUOTIANYI_ID) ->
         _pb_bool(12, True),
     ])
     path = str(Path(path).with_suffix(".svip3"))
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_bytes(project)
+    atomic_write_bytes(path, project)
     return path
 
 
@@ -256,10 +283,11 @@ def _tick_ms(song: Song, ticks: float) -> float:
     return float(ticks) * 60000.0 / (bpm * resolution)
 
 
-def _ustx_pitch_points(song: Song, note: Note) -> list[tuple[int, float]]:
+def _ustx_pitch_points(song: Song, note: Note, *,
+                       pitch_index: _PitchIndex | None = None) -> list[tuple[int, float]]:
     """OpenUTAU pitch points: x = ms after note start, y = 0.1 semitone."""
     pts = []
-    for tick, cents in pit_cents(song, note):
+    for tick, cents in pit_cents(song, note, pitch_index=pitch_index):
         x = int(round(_tick_ms(song, tick)))
         y = round(float(cents) / 10.0, 3)
         if pts and x <= pts[-1][0]:
@@ -294,10 +322,11 @@ def write_ustx(song: Song, path: str) -> str:
         raise ValueError("没有可导出的音符")
     end = max(n.start + n.dur for n in song.notes)
     notes = sorted(song.notes, key=lambda n: n.start)
+    pitch_index = _PitchIndex(song.controls.get("P", []))
 
     lines: list[str] = [
         "name: " + _yaml_str("VocaloidTTS") + "\n",
-        "comment: " + _yaml_str("Generated by VocaloidTTS 1.1") + "\n",
+        "comment: " + _yaml_str(f"Generated by VocaloidTTS {__version__}") + "\n",
         "outputDir: " + _yaml_str("VocaloidTTS_Output") + "\n",
         "cacheDir: " + _yaml_str("VocaloidTTS_Cache") + "\n",
         'ustxVersion: "0.10"\n',
@@ -333,12 +362,10 @@ def write_ustx(song: Song, path: str) -> str:
         lines.append(f"      - position: {int(n.start)}\n")
         lines.append(f"        duration: {int(max(1, n.dur))}\n")
         lines.append(f"        tone: {int(n.midi)}\n")
-        lyric = getattr(n.syl, "text", "") or ""
-        if not _has_han(lyric):
-            lyric = n.lyric or "a"
+        lyric = lyric_for(n)
         lines.append(f"        lyric: {_yaml_str(lyric)}\n")
         lines.append("        pitch:\n          data:\n")
-        for x, y in _ustx_pitch_points(song, n):
+        for x, y in _ustx_pitch_points(song, n, pitch_index=pitch_index):
             lines.append(f"          - {{x: {int(x)}, y: {float(y):.3f}, shape: io}}\n")
         lines.append("          snap_first: false\n")
         lines.append("        vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0, vol_link: 0}\n")
@@ -362,8 +389,7 @@ def write_ustx(song: Song, path: str) -> str:
         lines.append("        ys: [" + ", ".join(str(y) for y in ys) + "]\n")
     lines.append("    maskedCurves: []\n")
     path = str(Path(path).with_suffix(".ustx"))
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text("".join(lines), encoding="utf-8", newline="\n")
+    atomic_write_text(path, "".join(lines))
     return path
 
 
@@ -400,8 +426,9 @@ def write_svip(song: Song, path: str) -> str:
         raise ValueError("没有可导出的音符")
     end = max(n.start + n.dur for n in song.notes)
     pitch = []
+    pitch_index = _PitchIndex(song.controls.get("P", []))
     for n in song.notes:
-        for x, cents in pit_cents(song, n):
+        for x, cents in pit_cents(song, n, pitch_index=pitch_index):
             pitch.append([int(n.start + x), round(cents, 3)])
     track = {
         "type": "singing",
@@ -439,7 +466,5 @@ def write_svip(song: Song, path: str) -> str:
         "duration": int(max(1, end)),
     }
     path = str(Path(path).with_suffix(".svip"))
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(project, ensure_ascii=False, indent=2) + "\n",
-                          encoding="utf-8", newline="\n")
+    atomic_write_text(path, json.dumps(project, ensure_ascii=False, indent=2) + "\n")
     return path
