@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from vocaloidtts.formats import acep, formats
+from vocaloidtts.formats.base import ZSTD_BLOCK_MAX, zstd_store
 from vocaloidtts.prosody import VoiceOptions, compose
 
 try:  # Python 3.14+ 自带 zstd；更早的版本装 zstandard 也能解
@@ -50,23 +51,23 @@ def _walk_frame(data: bytes) -> list[tuple[int, int, int]]:
 class AcepFrameTests(unittest.TestCase):
     def test_single_raw_block(self) -> None:
         payload = "你好，世界".encode()
-        frame = acep._zstd_store(payload)
+        frame = zstd_store(payload)
         self.assertEqual(_walk_frame(frame), [(0, len(payload), 1)])
 
     def test_payload_is_split_into_blocks(self) -> None:
-        payload = b"x" * (acep.ZSTD_BLOCK_MAX * 2 + 5)
-        blocks = _walk_frame(acep._zstd_store(payload))
+        payload = b"x" * (ZSTD_BLOCK_MAX * 2 + 5)
+        blocks = _walk_frame(zstd_store(payload))
         self.assertEqual([length for _, length, _ in blocks],
-                         [acep.ZSTD_BLOCK_MAX, acep.ZSTD_BLOCK_MAX, 5])
+                         [ZSTD_BLOCK_MAX, ZSTD_BLOCK_MAX, 5])
         self.assertEqual([last for _, _, last in blocks], [0, 0, 1])
 
     def test_empty_payload_still_has_a_last_block(self) -> None:
-        self.assertEqual(_walk_frame(acep._zstd_store(b"")), [(0, 0, 1)])
+        self.assertEqual(_walk_frame(zstd_store(b"")), [(0, 0, 1)])
 
     @unittest.skipIf(_zstd_decompress is None, "当前解释器没有 zstd 解码器")
     def test_frame_round_trips_through_a_real_decoder(self) -> None:
         payload = json.dumps({"a": "中文", "n": list(range(50))}).encode()
-        self.assertEqual(_zstd_decompress(acep._zstd_store(payload)), payload)
+        self.assertEqual(_zstd_decompress(zstd_store(payload)), payload)
 
 
 class AcepExportTests(unittest.TestCase):

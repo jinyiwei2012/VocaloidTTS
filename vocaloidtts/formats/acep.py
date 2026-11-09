@@ -31,7 +31,7 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_bytes
 from ..prosody import Song
-from .base import Format, lyric_for
+from .base import Format, lyric_for, zstd_store
 
 #: ACE 的 tick 分辨率：480 tick = 1 个四分音符。
 TICKS_PER_QUARTER = 480
@@ -42,9 +42,6 @@ PROJECT_VERSION = 9
 #: 容器版本。>= 1000 表示 content 未加密。
 CONTAINER_VERSION = 1000
 
-#: zstd 单个 block 的最大原始字节数。
-ZSTD_BLOCK_MAX = 1 << 17
-
 #: 工程时长在最后一个音符之后留的余量，和 LibreSVIP 一致。
 TAIL_TICKS = 115_200
 
@@ -52,38 +49,6 @@ TAIL_TICKS = 115_200
 DEFAULT_SINGER_NAME = "然糊糊"
 DEFAULT_SINGER_ID = 26
 DEFAULT_SEED = 23
-
-
-def _zstd_store(data: bytes) -> bytes:
-    """把 ``data`` 包成一个 zstd 帧，块类型全部用 Raw（即不压缩）。
-
-    zstd 的帧格式允许 Raw 块，任何符合规范的解码器都读得出来——Python 3.14
-    的 ``compression.zstd`` 自己压缩 5 个字节时也是这么干的。这样导出就完全
-    不依赖 ``zstandard`` / ``pyzstd`` 这类二进制扩展，代价是文件不压缩。
-
-    我们的工程 JSON 只有几十 KB，为它多装一个 1 MB 的原生库不划算；真要压缩，
-    让 ACE Studio 自己另存一次就行。
-
-    帧结构（RFC 8878）：
-        magic ``28 b5 2f fd`` + 帧头描述符 + 4 字节内容长度 + 若干块
-    帧头描述符 ``0xa0``：FCS 字段 4 字节（bit7-6 = 10）、Single_Segment
-    （bit5 = 1），因此没有 Window_Descriptor，窗口大小等于内容长度。
-    """
-    out = bytearray(b"\x28\xb5\x2f\xfd")
-    out.append(0xA0)
-    out += len(data).to_bytes(4, "little")
-    pos = 0
-    while pos < len(data):
-        chunk = data[pos:pos + ZSTD_BLOCK_MAX]
-        pos += len(chunk)
-        last = 1 if pos >= len(data) else 0
-        # 块头 3 字节小端：bit0 = 最后一块，bit1-2 = 块类型（0 = Raw），
-        # bit3-23 = 块长度。
-        out += ((len(chunk) << 3) | last).to_bytes(3, "little")
-        out += chunk
-    if not data:
-        out += (1).to_bytes(3, "little")  # 空内容也要有一个「最后一块」
-    return bytes(out)
 
 
 def _ticks(song: Song, value: float) -> int:
@@ -257,7 +222,7 @@ def write_acep(song: Song, path: str) -> Path:
         "debugInfo": {"os": "windows", "platform": "pc", "version": "10"},
         "salt": "",
         "version": CONTAINER_VERSION,
-        "content": base64.b64encode(_zstd_store(payload)).decode("ascii"),
+        "content": base64.b64encode(zstd_store(payload)).decode("ascii"),
     }
     target = Path(path).with_suffix(".acep")
     atomic_write_bytes(target, json.dumps(wrapper).encode("utf-8"))

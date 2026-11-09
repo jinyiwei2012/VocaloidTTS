@@ -114,6 +114,41 @@ def db_value(vsqx: int) -> float:
     return max(-24.0, min(24.0, (float(vsqx) - 64.0) * 0.2))
 
 
+#: zstd 单个 block 的最大原始字节数。
+ZSTD_BLOCK_MAX = 1 << 17
+
+
+def zstd_store(data: bytes) -> bytes:
+    """把 ``data`` 包成一个 zstd 帧，块类型全部用 Raw（即不压缩）。
+
+    zstd 的帧格式允许 Raw 块，任何符合规范的解码器都读得出来——Python 3.14
+    的 ``compression.zstd`` 自己压缩 5 个字节时也是这么干的。这样导出就完全
+    不依赖 ``zstandard`` / ``pyzstd`` 这类二进制扩展，代价是文件不压缩。
+
+    ACE Studio（.acep）和 DiffScope（.dspx）都用 zstd 装工程，所以放在这里。
+
+    帧结构（RFC 8878）：
+        magic ``28 b5 2f fd`` + 帧头描述符 + 4 字节内容长度 + 若干块
+    帧头描述符 ``0xa0``：FCS 字段 4 字节（bit7-6 = 10）、Single_Segment
+    （bit5 = 1），因此没有 Window_Descriptor，窗口大小等于内容长度。
+    """
+    out = bytearray(b"\x28\xb5\x2f\xfd")
+    out.append(0xA0)
+    out += len(data).to_bytes(4, "little")
+    pos = 0
+    while pos < len(data):
+        chunk = data[pos:pos + ZSTD_BLOCK_MAX]
+        pos += len(chunk)
+        last = 1 if pos >= len(data) else 0
+        # 块头 3 字节小端：bit0 = 最后一块，bit1-2 = 块类型（0 = Raw），
+        # bit3-23 = 块长度。
+        out += ((len(chunk) << 3) | last).to_bytes(3, "little")
+        out += chunk
+    if not data:
+        out += (1).to_bytes(3, "little")  # 空内容也要有一个「最后一块」
+    return bytes(out)
+
+
 def comp_id(bank: "Voicebank") -> str:
     """VOCALOID 只认 16 字符的 compID。
 
