@@ -130,3 +130,54 @@ ustx 13993、svip 52570 全部一致）；新增 `tests/test_svp.py` 7 项；
 **风险与回滚**：`formats/` 是新增包，旧的 `exporters.py` / `vsqx.py` 暂时保留，
 回滚只需把 `app.py` 的 import 和调度改回去。SVP 的真实载入尚未验证——
 Studio 1 的 v153 格式（末尾需要 NUL）这一版没做，打开旧编辑器会提示版本过新。
+
+## 2026-11-09 ACE Studio 工程：zstd 容器怎么写
+
+**待定问题**：`.acep` 不是裸 JSON，`content` 是 zstd 压缩（老版本还可能 AES 加密）
+的工程数据。导出时必须产出 zstd 帧，但项目承诺「单运行时依赖 pypinyin」，
+发布流水线又跑在 Python 3.12 上（`compression.zstd` 要到 3.14 才进标准库）。
+
+**背景约束**：
+- `requirements.txt` 只有 pypinyin 一行；EXE 是 PyInstaller onedir，15 MB；
+- `.github/workflows/release.yml` 固定 `python-version: '3.12'`；
+- 我们只写不读，不需要解密，也不需要解压别人给的工程。
+
+**调研参考**：
+- LibreSVIP 的 `acep_io.py`：`compress_ace_studio_project` 用 `zstd.compress`
+  再 base64 包进 `AcepFile`，容器版本取默认 1000（未加密）；CBOR 变体是
+  ACE Studio 2.0.7+ 才用的，老版本读不了，所以它默认仍写 JSON。
+- RFC 8878：zstd 帧的块类型有 Raw / RLE / Compressed 三种，Raw 块是规范内的
+  合法编码。实测 Python 3.14 自己的 `compression.zstd.compress(b"hello")`
+  对 5 字节输入产出的就是一个 Raw 块帧（块头 `0x29` → 最后一块、类型 0、长度 5），
+  说明这条路不是取巧。
+
+**候选方案**
+1. **加 `zstandard` 依赖**：`ZstdCompressor().compress()`，几行代码，真压缩。
+   代价：多一个原生扩展（约 1 MB wheel），打破单依赖承诺，PyInstaller 要额外
+   处理 hiddenimport，CI 与本地解释器版本差异又引入一层打包不确定性。
+2. **自己拼 Raw 块 zstd 帧**：约 40 行，零依赖，任何符合规范的解码器都能读。
+   代价：文件不压缩（我们的工程 JSON 只有 8–200 KB）。
+3. **只在有 zstd 时提供该格式**：注册表按可用性过滤。代价：同一版本在不同
+   Python 上格式列表不一致，UI 和测试都要按环境分支。
+
+**选择**：方案 2。
+
+**选择理由**：Raw 块是规范内的合法编码，不是私有扩展；换来的是零新依赖、
+Python 3.10–3.14 行为完全一致、CI 和本地产出同一份字节流。方案 2 唯一的代价
+是体积，而体积在这里不重要——真要压缩，让 ACE Studio 另存一次就行。
+
+**未选原因**
+- 方案 1：为一个几十 KB 的工程文件引入原生二进制依赖，和「单依赖、包小、离线」
+  的定位冲突；PyInstaller 打原生扩展还要多一层不确定性。
+- 方案 3：格式列表随解释器版本漂移，`FORMATS` 的语义会从「有什么格式」变成
+  「这台机器上有什么格式」，UI 和测试都得跟着分支。
+
+**验证方式**：`tests/test_acep.py` 10 项——按 RFC 8878 拆帧校验 magic、帧头
+描述符、块类型、块长度、最后一块标记；超 128 KB 的输入切成 3 块且只有最后
+一块带标记；空输入也留一个「最后一块」；在 Python 3.14 上用
+`compression.zstd.decompress`（libzstd）把帧解回原文。全量 226 项测试通过，
+ruff 无告警。
+
+**风险与回滚**：`_zstd_store` 的正确性依赖解码器接受 Raw 块——这一点用 libzstd
+验证过，但**没有在真的 ACE Studio 里打开过**，属于未验证。回滚方式是删掉
+`formats/acep.py` 和注册表里那一行，其他格式不受影响。
