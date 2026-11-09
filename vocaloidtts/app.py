@@ -137,7 +137,13 @@ class RoundedButton(tk.Canvas):
         self._kind = kind
         font = tkfont.Font(font=(FONT, 9, "bold"))
         width = font.measure(text) + 2 * padx + 10
-        super().__init__(parent, width=width, height=38, bg=BG,
+        # 圆角之外的四角画的是 Canvas 自己的底色。写死 BG 时，按钮放到
+        # 卡片或状态栏上就会露出四个深色角，所以跟着父容器走。
+        try:
+            backdrop = parent.cget("bg")
+        except Exception:
+            backdrop = BG
+        super().__init__(parent, width=width, height=38, bg=backdrop,
                          highlightthickness=0, bd=0, cursor="hand2")
         self.bind("<Button-1>", lambda e: self._command())
         self.bind("<ButtonRelease-1>", lambda e: self._draw(hover=False))
