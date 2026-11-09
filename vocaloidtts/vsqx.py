@@ -5,8 +5,24 @@ import os
 from datetime import datetime
 
 from .atomicio import atomic_write_text
+from .exporters import lyric_for
 from .prosody import Song
 from .voicebank import Voicebank
+
+
+def _comp_id(bank: Voicebank) -> str:
+    """VOCALOID 只认 16 字符的 compID。
+
+    长度不对时编辑器不会报错，而是静默回退到默认歌手——用户会以为选错了库。
+    与其导出一个找不到声库的文件，不如在这里说清楚。
+    """
+    bid = (bank.id or "").strip()
+    if len(bid) != 16 or not bid.isascii():
+        raise ValueError(
+            f"声库「{bank.display}」的 compID 不是 16 位"
+            f"（实际 {len(bid)} 位：{bid!r}）。"
+            "导出的 VSQX 会找不到这个声库，请到声库面板重新扫描。")
+    return bid
 
 
 def _cdata(text: str) -> str:
@@ -40,7 +56,7 @@ def _note_lines(song: Song) -> str:
             f"\t\t\t\t<dur>{int(n.dur)}</dur>\n"
             f"\t\t\t\t<n>{int(max(0, min(127, n.midi)))}</n>\n"
             f"\t\t\t\t<v>{int(max(1, min(127, n.velocity)))}</v>\n"
-            f"\t\t\t\t<y>{_cdata(n.lyric)}</y>\n"
+            f"\t\t\t\t<y>{_cdata(lyric_for(n))}</y>\n"
             f"\t\t\t\t<p>{_cdata(n.phonemes or 'a')}</p>\n"
             "\t\t\t\t<nStyle>\n"
             f"\t\t\t\t\t<v id=\"accent\">{accent}</v>\n"
@@ -69,7 +85,10 @@ def write_vsqx(song: Song, path: str, voicebank: Voicebank,
     denominator = int(song.denominator if denominator is None else denominator)
     measure_ticks = max(1, int(round(resolution * 4 * numerator / denominator)))
     part_start = measure_ticks * 4
-    play_time = part_start + max(measure_ticks, song.total_ticks + measure_ticks)
+    # playTime 是 part 的播放长度，不含起点偏移；原来把 part_start 也加了进去，
+    # 整段凭空长出 4 小节。起点只影响 <t>。
+    play_time = max(measure_ticks, song.total_ticks + measure_ticks)
+    comp_id = _comp_id(voicebank)
     seq_name = (title or "VocaloidTTS")[:120]
     comment = f"VocaloidTTS 语调教 / {voicebank.display} / {datetime.now():%Y-%m-%d %H:%M}"
     ctl = _ctl_lines(song.controls)
@@ -85,7 +104,7 @@ def write_vsqx(song: Song, path: str, voicebank: Voicebank,
 \t\t<vVoice>
 \t\t\t<bs>{int(voicebank.bs)}</bs>
 \t\t\t<pc>{int(voicebank.pc)}</pc>
-\t\t\t<id>{_cdata(voicebank.id)}</id>
+\t\t\t<id>{_cdata(comp_id)}</id>
 \t\t\t<name>{_cdata(voicebank.name)}</name>
 \t\t\t<vPrm>
 \t\t\t\t<bre>0</bre>
