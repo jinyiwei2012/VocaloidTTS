@@ -97,6 +97,46 @@ def comp_id(bank: "Voicebank") -> str:
     return bid
 
 
+def seconds(song: Song, tick: float) -> float:
+    """tick -> 秒。Song 只有一条速度线，所以不需要积分。"""
+    resolution = int(getattr(song, "resolution", 480) or 480)
+    bpm = max(1.0, float(song.bpm))
+    return float(tick) * 60.0 / (bpm * resolution)
+
+
+#: 切歌词行时认定的「停顿」长度：1/8 个四分音符。
+#: 我们生成的音符之间要么紧挨着（0 tick），要么是标点带来的 200+ tick 停顿，
+#: 所以这个阈值不会把词切开。
+LINE_GAP = 60
+
+
+def lyric_lines(song: Song, *, min_gap: int = LINE_GAP) -> list[list[Note]]:
+    """把音符按停顿切成歌词行，供 .lrc / .srt / .ass 这类时间轴文件使用。"""
+    notes = [note for note in song.notes if note.dur > 0]
+    lines: list[list[Note]] = []
+    current: list[Note] = []
+    for index, note in enumerate(notes):
+        current.append(note)
+        last = index + 1 == len(notes)
+        gap = 0 if last else notes[index + 1].start - (note.start + note.dur)
+        if last or gap >= min_gap:
+            lines.append(current)
+            current = []
+    return lines
+
+
+def lyric_text(group: Iterable[Note]) -> str:
+    """把一行的音符拼成可读文本：中文直接连写，拉丁字母之间补空格。"""
+    parts: list[str] = []
+    for note in group:
+        text = lyric_for(note)
+        parts.append(text)
+        tail = text[-1:] or ""
+        if tail.isascii() and tail.isalpha():
+            parts.append(" ")
+    return "".join(parts).strip()
+
+
 @dataclass(frozen=True)
 class Format:
     """一个导出格式的完整描述。
