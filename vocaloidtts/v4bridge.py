@@ -31,9 +31,41 @@ ID_FILE_OPEN = 57601
 VK_CONTROL = 0x11
 VK_O = 0x4F
 KEYEVENTF_KEYUP = 0x0002
+SMTO_ABORTIFHUNG = 0x0002
+
+
+def _send(hwnd: int, msg: int, wparam: int, lparam: int,
+          timeout_ms: int = 3000) -> bool:
+    """带超时的 SendMessageW。
+
+    目标进程卡住时 SendMessageW 会无限期阻塞，把载入线程吊死。
+    SMTO_ABORTIFHUNG 让它在目标不处理消息时立即返回 0。
+    """
+    result = ctypes.c_size_t()
+    try:
+        ok = user32.SendMessageTimeoutW(
+            hwnd, msg, wparam, lparam, SMTO_ABORTIFHUNG,
+            timeout_ms, ctypes.byref(result))
+    except Exception:
+        return False
+    return bool(ok)
+
+
+def _no_response(label: str, path: str) -> str:
+    return (f"{label} 没有响应载入指令。\n\n"
+            "可能是编辑器正忙，或它是以管理员权限启动的——"
+            "UIPI 会丢弃来自低权限进程的消息。\n"
+            f"请用相同权限重新运行 VocaloidTTS，或手动打开：\n{path}")
 
 if user32 is not None:
     WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    # 窗口句柄在 64 位下可能超过 32 位；不声明 restype 会被默认的 c_int 截断。
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    # SendMessageW 在目标无响应时会一直阻塞，改用带超时的版本。
+    user32.SendMessageTimeoutW.restype = ctypes.c_size_t
+    user32.SendMessageTimeoutW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
 else:
     WNDENUMPROC = None
 
@@ -170,7 +202,8 @@ def launch_editor(kind: str | None = None) -> tuple[int, str] | None:
     exe = get_v5_exe() if kind == "v5" else get_v4_exe()
     if not os.path.isfile(exe):
         return None
-    subprocess.Popen([exe], cwd=os.path.dirname(exe))
+    # cwd="" 在 Windows 上不是「当前目录」而是无效路径，Popen 会直接抛错
+    subprocess.Popen([exe], cwd=os.path.dirname(exe) or None)
     finder = find_v5_window if kind == "v5" else find_v4_window
     for _ in range(120):
         time.sleep(0.5)
@@ -307,15 +340,19 @@ def open_vsqx(path: str, target: str | None = None) -> tuple[bool, str]:
     if not edit:
         return False, (f"{label} 的对话框里没找到文件名输入框。\n\n"
                        f"请手动打开：\n{path}")
-    user32.SendMessageW(edit, WM_SETTEXT, 0, ctypes.c_wchar_p(path))
+    path_buf = ctypes.c_wchar_p(path)
+    if not _send(edit, WM_SETTEXT, 0,
+                 ctypes.cast(path_buf, ctypes.c_void_p).value):
+        return False, _no_response(label, path)
     time.sleep(0.25)
     btn = _child_with_id(dlg, 1)
     if not btn:
         return False, (f"{label} 的对话框里没找到「打开」按钮。\n\n"
                        f"请手动打开：\n{path}")
-    user32.SendMessageW(btn, BM_CLICK, 0, 0)
+    if not _send(btn, BM_CLICK, 0, 0):
+        return False, _no_response(label, path)
     time.sleep(1.2)
     leftover = _find_open_dialog(0.5, owner_pid=owner)
     if leftover:
-        user32.SendMessageW(leftover, WM_COMMAND, 2, 0)
+        _send(leftover, WM_COMMAND, 2, 0, timeout_ms=1000)
     return True, f"已发送载入指令（{label}）"

@@ -65,6 +65,9 @@ else:
         ctypes.c_void_p, wintypes.HWND, wintypes.UINT,
         wintypes.WPARAM, wintypes.LPARAM]
     user32.GetAncestor.restype = wintypes.HWND
+    # 句柄在 64 位下可能超过 32 位；默认 restype c_int 会把它截断
+    user32.GetParent.restype = wintypes.HWND
+    user32.GetParent.argtypes = [wintypes.HWND]
     shell32.DragQueryFileW.argtypes = [
         wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
     shell32.DragQueryFileW.restype = wintypes.UINT
@@ -184,20 +187,36 @@ else:
             nid.hIcon = self._hicon
             nid.szTip = self.tooltip[:127]
             self._nid = nid
-            if not shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid)):
+            if not self._add_icon():
                 self._hwnd = 0
                 self._ready.set()
                 return
-            try:
-                nid.uVersion = 4
-                shell32.Shell_NotifyIconW(NIM_SETVERSION, ctypes.byref(nid))
-            except Exception:
-                pass
             self._ready.set()
             msg = wintypes.MSG()
             while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
+
+        def _add_icon(self) -> bool:
+            """NIM_ADD，再设通知版本。
+
+            explorer.exe 重启后图标会消失，重建时必须把版本号一起重设，
+            否则气泡通知退回 0 版行为。
+            """
+            nid = self._nid
+            if nid is None:
+                return False
+            try:
+                if not shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid)):
+                    return False
+            except Exception:
+                return False
+            try:
+                nid.uVersion = 4
+                shell32.Shell_NotifyIconW(NIM_SETVERSION, ctypes.byref(nid))
+            except Exception:
+                pass
+            return True
 
         def _load_icon(self) -> int:
             try:
@@ -224,10 +243,7 @@ else:
                     # Explorer restarted: the icon must be added again or the
                     # app becomes unreachable (the window is already hidden).
                     if self._nid is not None:
-                        try:
-                            shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(self._nid))
-                        except Exception:
-                            pass
+                        self._add_icon()
                     return 0
                 if msg == WM_CLOSE:
                     if self._nid is not None:

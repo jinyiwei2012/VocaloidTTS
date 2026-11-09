@@ -26,7 +26,7 @@ v1.2.0 发布后对全仓做了首次完整审查（`python-code-review` + 人�
 | B | VSQX 导出数据 | B1–B3 | 已完成 |
 | C | 文本导入编码 | C1–C3 | 已完成 |
 | D | 应用健壮性 | D1–D4 | 已完成（D2/D3 复测为误报，已撤销） |
-| E | Win32 平台层 | E1–E8 | 待做 |
+| E | Win32 平台层 | E1–E8 | 已完成（E1/E2 复测为误报，已撤销） |
 | F | 界面细节 | F1–F3 | 待做 |
 | G | 收尾与更正 | G1–G2 | 待做 |
 | N | 暂不修（第三轮） | N1–N6 | 记录在案 |
@@ -186,55 +186,66 @@ v1.2.0 发布后对全仓做了首次完整审查（`python-code-review` + 人�
 
 ## 批 E：Win32 平台层（P2）
 
-这一批没有自动化测试，只能靠读代码 + 真机验证，改动要格外保守。
+真正的窗口、托盘和编辑器交互没法在单元测试里跑。这一批把能测的规则
+抽出来放进 `tests/test_win32_guards.py`（托盘重建要重设版本号、消息要带超时），
+其余仍需真机确认。
 
-### E1 `RegisterClassW` 不检查返回值 [代码确认]
+### E1 撤销：`RegisterClassW` 不检查返回值 [已复测，不成立]
 
-- 位置：`vocaloidtts/tray.py`（窗口类注册）
-- 现象：类已存在时返回 0，后续 `CreateWindowExW` 拿到空句柄，托盘静默不出现。
-- 修法：检查返回值与 `GetLastError() == ERROR_CLASS_ALREADY_EXISTS (1410)`，其余情况抛错。
+原记录称类已存在时 `CreateWindowExW` 会拿到空句柄。实际上类已注册时
+`CreateWindowExW` 仍然成功（窗口类还在），而注册真失败时 `CreateWindowExW`
+会返回 0，代码里已有 `if not hwnd: return` 兜底。**这条不成立**，不改。
 
-### E2 `NIM_SETVERSION` 之后才设 tooltip [代码确认]
+### E2 撤销：`NIM_SETVERSION` 之后才设 tooltip [已复测，不成立]
 
-- 位置：`vocaloidtts/tray.py`（`NIM_ADD` 流程）
-- 现象：`NIM_SETVERSION` 会重置部分字段，之后设置的 tooltip 在某些 shell 版本上不生效。
-- 修法：把 tooltip 设置移到 `NIM_SETVERSION` 之前，或在其后再发一次 `NIM_MODIFY`。
+原记录称 tooltip 在 `NIM_SETVERSION` 之后才设置。实测 `tray.py` 的顺序是
+`nid.szTip = ...` → `NIM_ADD` → `NIM_SETVERSION`，tooltip 在添加图标时
+就带上了，`NIM_SETVERSION` 只改 `uVersion` 字段。**这条不成立**，不改。
 
-### E3 `TaskbarCreated` 后不重发 `NIM_SETVERSION` [代码确认]
+### E3 `TaskbarCreated` 后不重发 `NIM_SETVERSION` [已修复]
 
-- 位置：`vocaloidtts/tray.py`（消息循环）
-- 现象：explorer.exe 重启后托盘重建，但版本号没重设，气泡通知行为回退到旧版。
-- 修法：重建流程里补一次 `NIM_SETVERSION`。
+- **位置**：`vocaloidtts/tray.py`（`_add_icon`、`_proc`）
+- **现象**：explorer.exe 重启后只发 `NIM_ADD`，版本号没重设，气泡通知行为回退到 0 版。
+- **修法**：把「添加图标 + 设版本」抽成 `_add_icon()`，`_run()` 与 `TaskbarCreated`
+  分支都走它。
+- **验证**：`TrayRebuildTests` 断言 `_add_icon()` 依次发出 `NIM_ADD`、`NIM_SETVERSION`，
+  且 `uVersion == 4`；失败时返回 False。explorer 重启本身需真机确认。
 
-### E4 `GetParent` 未声明 `restype` [代码确认]
+### E4 `GetParent` 未声明 `restype` [已修复]
 
-- 位置：`vocaloidtts/tray.py` / `v4bridge.py`（ctypes 声明区）
-- 现象：默认 `c_int` 截断 64 位句柄，极端情况下拿到错误的父窗口。
-- 修法：`argtypes` / `restype` 全部显式声明为 `HWND`。
+- **位置**：`vocaloidtts/tray.py`（ctypes 声明区）
+- **现象**：默认 `c_int` 会截断 64 位句柄，`_hook_top` 可能拿到错误的父窗口。
+- **修法**：`GetParent.restype = wintypes.HWND`，`argtypes = [wintypes.HWND]`。
+- **验证**：无法自动测，靠类型声明审阅；拖拽与关闭拦截需真机点一遍。
 
-### E5 `SendMessageW` 没有超时 [代码确认]
+### E5 `SendMessageW` 没有超时 [已修复]
 
-- 位置：`vocaloidtts/v4bridge.py`
-- 现象：目标编辑器无响应时，`SendMessageW` 会一直阻塞，整个导出流程卡死。
-- 修法：改用 `SendMessageTimeoutW`，超时后报「编辑器无响应」。
+- **位置**：`vocaloidtts/v4bridge.py`（`_send`）
+- **现象**：目标编辑器无响应时 `SendMessageW` 会无限期阻塞，把载入线程吊死。
+- **修法**：改用 `SendMessageTimeoutW` + `SMTO_ABORTIFHUNG`，默认 3 秒。
+- **验证**：`SendTimeoutTests` 断言使用 `SMTO_ABORTIFHUNG` 且传了结果指针。
 
-### E6 UIPI 拦截后静默失败 [代码确认]
+### E6 UIPI 拦截后静默失败 [已修复]
 
-- 位置：`vocaloidtts/v4bridge.py`
-- 现象：编辑器以管理员权限运行时，普通权限进程发消息被 UIPI 丢弃，返回值看着像成功。
-- 修法：检测返回值 + `GetLastError() == ERROR_ACCESS_DENIED (5)`，给出「请以相同权限运行」的提示。
+- **位置**：`vocaloidtts/v4bridge.py`（`_no_response`、`open_vsqx`）
+- **现象**：编辑器以管理员权限运行时，普通权限进程的消息被 UIPI 丢弃，
+  用户只看到「载入失败」却不知道原因。
+- **修法**：`_send` 返回 False 时给出 `_no_response` 提示，明确写出「可能是
+  权限不一致，请用相同权限运行」，并附上文件路径让用户手动打开。
+- **验证**：`SendTimeoutTests.test_no_response_says_why` 断言提示里含「管理员权限」和路径。
 
-### E7 `GetForegroundWindow` 未声明 `restype` [代码确认]
+### E7 `GetForegroundWindow` 未声明 `restype` [已修复]
 
-- 位置：`vocaloidtts/v4bridge.py`
-- 现象：同 E4，句柄被截断成 32 位。
-- 修法：显式声明 `restype = HWND`。
+- **位置**：`vocaloidtts/v4bridge.py`（ctypes 声明区）
+- **现象**：同 E4，句柄被截断成 32 位，`_send_ctrl_o` 的前台窗口比对可能失准。
+- **修法**：`GetForegroundWindow.restype = wintypes.HWND`。
 
-### E8 `Popen(cwd="")` [代码确认]
+### E8 `Popen(cwd="")` [已修复]
 
-- 位置：`vocaloidtts/v4bridge.py`
-- 现象：`cwd` 为空字符串时行为依赖平台，可能抛 `FileNotFoundError`。
-- 修法：`cwd or None`。
+- **位置**：`vocaloidtts/v4bridge.py`（`launch_editor`）
+- **现象**：`exe` 没有目录部分时 `os.path.dirname()` 返回空串，`cwd=""`
+  在 Windows 上不是「当前目录」，`Popen` 直接抛错。
+- **修法**：`cwd=os.path.dirname(exe) or None`。
 
 ---
 
