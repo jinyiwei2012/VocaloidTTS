@@ -7,14 +7,20 @@ MIT 项目，按 MIT 要求保留原版权与许可声明。
 
 - 仓库：<https://github.com/SoulMelody/LibreSVIP>
 - 许可证：MIT
-- 用到的部分：`vocaloidtts/formats/svp.py` 的 SVP 字段结构、时间单位换算
-  （`TICK_RATE = 1,470,000`，即 1 tick = 1,470,000 blick、480 tick = 1 个四分音符）
-  和版本号约定，参考自 `libresvip/plugins/svp/` 下的 `model.py`、
-  `constants.py`、`synthv_generator.py`、`options.py`。
+- 用到的部分：下面这些导出格式的字段结构、时间单位换算和版本号约定，参考自
+  `libresvip/plugins/` 下对应的插件目录。**只参考了结构，没有复制运行时代码**，
+  也没有引入它的 pydantic 模型、yapsy 插件框架和本地化层。
 
-本项目只移植了**写**方向，并做了简化：单轨、不生成 `groups`/`library` 引用、
-`phonemes` 留空交给编辑器自动生成、只写 `pitchDelta` 一条曲线。没有直接复制
-LibreSVIP 的运行时代码，也没有引入它的 pydantic 模型和插件框架。
+| 本项目的模块 | 参考的 LibreSVIP 插件 | 具体借鉴了什么 |
+|---|---|---|
+| `formats/svp.py` | `plugins/svp/` | 字段结构、`TICK_RATE = 1,470,000`（480 tick = 1 个四分音符 = 705,600,000 blick）、版本号约定 |
+| `formats/s5p.py` | `plugins/s5p/` | `version: 7`、meter/tempo/tracks 结构、blick 换算、`dbDefaults` 默认值 |
+| `formats/acep.py` | `plugins/acep/` | zstd + base64 容器（`version: 1000` 表示未加密）、`version: 9` 的工程结构、音符/patter 字段 |
+| `formats/vpr.py` | `plugins/vpr/` | zip 内 `Project/sequence.json` 的结构、控制器名（含 gender→`character`）、BPM 的 1/100 倍率 |
+| `formats/__init__.py` | `plugins/` 的组织方式 | 「每个格式一个模块 + 元数据自带」的注册表思路 |
+
+各格式都只移植了**写**方向，并按本项目需要做了简化（单轨、不写参数曲线或只写
+少数几条、不生成声库/分组引用等），具体简化写在每个模块的 docstring 里。
 
 原项目版权声明：
 

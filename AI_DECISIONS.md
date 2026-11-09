@@ -181,3 +181,48 @@ ruff 无告警。
 **风险与回滚**：`_zstd_store` 的正确性依赖解码器接受 Raw 块——这一点用 libzstd
 验证过，但**没有在真的 ACE Studio 里打开过**，属于未验证。回滚方式是删掉
 `formats/acep.py` 和注册表里那一行，其他格式不受影响。
+
+## 2026-11-09 VPR 的歌词与音素：汉字还是拼音
+
+**待定问题**：VOCALOID 5/6 的 `.vpr` 里，`lyric` 该写汉字还是拼音？`phoneme`
+该写真实 X-SAMPA，还是像 LibreSVIP 那样统一写 `l a` 再让用户跑一次转换？
+
+**背景约束**：
+- 同一个程序里，VSQX 写拼音（VOCALOID 的中文歌词栏按拼音解析），其余格式写汉字；
+- 我们已经有 `pinyin_to_phonemes()`，能给出 VOCALOID 的 X-SAMPA；
+- 没有 VOCALOID 5/6 可实测。
+
+**调研参考**：
+- LibreSVIP 的 `vpr_parser.py` 把 `note.lyric` 原样收进中间模型，不做拼音转换；
+  而它的 `vsq4_generator.py` 在写 VSQX 时才调用 `get_pinyin_series(note.lyric)`
+  把汉字转成拼音。若 vpr 里存的本来就是拼音，这一步转换就没有意义——反推 vpr
+  的 `lyric` 是汉字。
+- 同一个解析器在 `lyric` 为空时的中文兜底值是 `DEFAULT_CHINESE_LYRIC = "啦"`
+  （汉字），而不是 `DEFAULT_ENGLISH_LYRIC = "la"`，也指向汉字。
+- `vpr_generator.generate_phoneme()` 对中文走 `pinyin2xsampa`，只有在语言不是
+  中日韩时才退化成 `DEFAULT_CHINESE_PHONEME = "l a"` 并弹提示。
+
+**候选方案**
+1. **lyric 汉字 + phoneme 真实 X-SAMPA**：两边都写对，和 VSQX 的 `<p>` 同一套符号。
+2. **lyric 拼音 + phoneme 真实 X-SAMPA**：和本项目的 VSQX 保持一致。
+3. **照抄 LibreSVIP 的兜底**：phoneme 统一写 `l a`，导出后提示用户跑
+   「Convert Phonemes to Match Languages」。
+
+**选择**：方案 1。
+
+**选择理由**：vpr 的 `lyric` 按证据是汉字；音素我们本来就有表，没理由退化成
+`l a` 让用户手动补一刀。VSQX 写拼音是**那个格式**的约束，不是全局约定——
+两种 VOCALOID 格式的差异是有依据的，不算不一致。
+
+**未选原因**
+- 方案 2：把 VSQX 的约束套到 vpr 上，没有证据支持，还会让中文用户在 V5 里
+  看到一列拼音。
+- 方案 3：等于把已有能力丢掉，还多一步手工操作；LibreSVIP 这么做是因为它
+  没有中文映射表，我们有。
+
+**验证方式**：`tests/test_vpr.py::test_notes` 断言 `lyric` 是汉字、`phoneme`
+等于 `Note.phonemes` 且不等于兜底值 `l a`。
+
+**风险与回滚**：**未在 VOCALOID 5/6 里实测**。如果 V5 的歌词栏其实按拼音解析，
+表现会和 VSQX 一样需要手动改；但音素是显式写进去的，发声不会因为歌词列认不出
+而失效。回滚方式是改 `formats/vpr.py` 里 `_note()` 的 `lyric_for(note)` 一行。
