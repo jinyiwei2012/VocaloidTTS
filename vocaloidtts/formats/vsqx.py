@@ -7,22 +7,7 @@ from datetime import datetime
 from ..atomicio import atomic_write_text
 from ..prosody import Song
 from ..voicebank import Voicebank
-from .base import Format, lyric_for
-
-
-def _comp_id(bank: Voicebank) -> str:
-    """VOCALOID 只认 16 字符的 compID。
-
-    长度不对时编辑器不会报错，而是静默回退到默认歌手——用户会以为选错了库。
-    与其导出一个找不到声库的文件，不如在这里说清楚。
-    """
-    bid = (bank.id or "").strip()
-    if len(bid) != 16 or not bid.isascii():
-        raise ValueError(
-            f"声库「{bank.display}」的 compID 不是 16 位"
-            f"（实际 {len(bid)} 位：{bid!r}）。"
-            "导出的 VSQX 会找不到这个声库，请到声库面板重新扫描。")
-    return bid
+from .base import Format, comp_id as _comp_id, lyric_for
 
 
 def _cdata(text: str) -> str:
