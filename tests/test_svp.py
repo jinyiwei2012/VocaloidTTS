@@ -60,7 +60,8 @@ class SvpExportTests(unittest.TestCase):
 
     def test_registry_lists_svp(self) -> None:
         self.assertEqual(formats()["svp"].extension, ".svp")
-        self.assertEqual(len(formats()), 7)
+        # 只断言「这些格式还在」，不钉死总数——加格式不该让它变红
+        self.assertTrue({"vsqx", "svp", "svip3", "ustx", "svip"} <= set(formats()))
 
 
 if __name__ == "__main__":
