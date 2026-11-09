@@ -25,7 +25,7 @@ v1.2.0 发布后对全仓做了首次完整审查（`python-code-review` + 人�
 | A | 中文听感 | A1–A3 | 已完成 |
 | B | VSQX 导出数据 | B1–B3 | 已完成 |
 | C | 文本导入编码 | C1–C3 | 已完成 |
-| D | 应用健壮性 | D1–D4 | 待做 |
+| D | 应用健壮性 | D1–D4 | 已完成（D2/D3 复测为误报，已撤销） |
 | E | Win32 平台层 | E1–E8 | 待做 |
 | F | 界面细节 | F1–F3 | 待做 |
 | G | 收尾与更正 | G1–G2 | 待做 |
@@ -149,35 +149,38 @@ v1.2.0 发布后对全仓做了首次完整审查（`python-code-review` + 人�
 
 ## 批 D：应用健壮性（P2）
 
-### D1 `_bpm()` / `_meter()` 不回写控件 [待复现]
+### D1 `_bpm()` / `_meter()` 不回写控件 [已复现]
 
-- **位置**：`vocaloidtts/app.py`（`_bpm` / `_meter`）
-- **现象**：BPM 框里填了非法值（空、0、字母），程序回退到默认值继续生成，
-  但输入框仍显示非法文本——用户以为用了自己填的数。
-- **修法**：解析失败时把控件内容改回实际生效值，并给一次状态栏提示。
-- **验证**：抽出纯函数 `parse_bpm(text, default) -> (value, ok)`，测试非法输入返回默认值且 `ok=False`。
+- **位置**：`vocaloidtts/app.py`（`parse_bpm` / `parse_meter` / `_bpm` / `_meter`）
+- **现象**：BPM 框里填了非法值（空、字母、0），程序回落到 120 继续生成，
+  但输入框仍显示原文——用户以为用了自己填的数。拍号同理。
+- **修法**：解析逻辑抽成模块级 `parse_bpm` / `parse_meter`，`_bpm()` / `_meter()`
+  发现控件文本与生效值不一致时回写控件。
+- **验证**：`ParseInputTests` 3 项断言回落与夹取；回写行为需 GUI 手工确认。
 
-### D2 `os.startfile` 前把整个文件读进内存 [代码确认]
+### D2 撤销：`os.startfile` 前把整个文件读进内存 [已复测，不成立]
 
-- **位置**：`vocaloidtts/app.py`（打开导出目录/文件的分支）
-- **现象**：为了判断文件是否存在或取路径，把大文件整体读入；导出的 VSQX 可能几十 MB。
-- **修法**：只做 `Path.exists()` 检查后交给 `os.startfile`，不读内容。
-- **验证**：测试用 1 MB 临时文件，断言打开路径不触发读取（用 `Path.stat` 计数或直接审阅代码路径）。
+原记录称打开导出文件前会整体读入。实测 `app.py` 里只有两处 `read_bytes`：
+`_load_text_file`（导入文本本来就要读全文，且有 20 万字符截断）和
+`dest.write_bytes(src.read_bytes())`（复制工程文件）。三处 `os.startfile()`
+调用都是直接传路径，不读内容。**这条是误报**，不再列入待修。
 
-### D3 `_ensure_tray` 失败后窗口不销毁 [代码确认]
+### D3 撤销：`_ensure_tray` 失败后窗口不销毁 [已复测，不成立]
 
-- **位置**：`vocaloidtts/app.py`（`_ensure_tray`）
-- **现象**：托盘创建失败时只记日志，主窗口仍被隐藏，用户既看不到窗口也没有托盘图标。
-- **修法**：失败时回滚为「不隐藏窗口」，并把错误显示在状态栏。
-- **验证**：模拟托盘构造抛异常，断言窗口 `state()` 不是 `withdrawn`。
+原记录称托盘创建失败时窗口仍被隐藏。实测 `_minimize_to_tray` 在
+`_ensure_tray()` 返回 False 时先弹窗问「现在直接退出吗」，用户选「否」
+就 `return`，而 `self.withdraw()` 在成功路径末尾——窗口保持显示。
+**这条是误报**，不再列入待修。
 
-### D4 `main()` 没有全局异常钩子 [代码确认]
+### D4 `main()` 没有全局异常钩子 [已复现]
 
-- **位置**：`vocaloidtts/app.py`（`main`）
-- **现象**：Tk 回调里未捕获的异常只在控制台打印；`console=False` 构建下用户什么都看不到，
-  窗口卡住也不知道发生了什么。
-- **修法**：安装 `sys.excepthook` 与 `Tk.report_callback_exception`，写日志 + 弹一次错误框（去重）。
-- **验证**：测试钩子函数对同一异常只弹一次；日志文件出现堆栈。
+- **位置**：`vocaloidtts/app.py`（`_install_excepthooks` / `main`）
+- **现象**：`main()` 直接 `VocaloidTTSApp().mainloop()`，Tk 回调里的异常只在
+  控制台打印；`console=False` 构建下窗口「没反应」，日志里也没有痕迹。
+- **修法**：安装 `sys.excepthook` 与 `Tk.report_callback_exception`，统一写日志；
+  同一个异常只弹一次框（`after` 回调出错时可能每帧都抛）。
+- **验证**：`ExcepthookTests` 断言同一异常调用三次只弹一次、日志写三次。
+  弹窗本身需真机确认。
 
 ---
 

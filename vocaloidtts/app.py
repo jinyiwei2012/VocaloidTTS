@@ -283,6 +283,31 @@ class RoundedSlider(tk.Canvas):
         return "break"
 
 
+def parse_bpm(raw: str) -> float:
+    """把 BPM 输入框的文本变成可用值；非法输入回落到 120。"""
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        value = 120.0
+    return max(40.0, min(240.0, value))
+
+
+def parse_meter(num_raw: str, den_raw: str) -> tuple[int, int]:
+    """拍号：分子 1–16，分母只认 2/4/8/16。"""
+    try:
+        num = int(str(num_raw).strip())
+    except (TypeError, ValueError):
+        num = 4
+    num = max(1, min(16, num))
+    try:
+        den = int(str(den_raw).strip())
+    except (TypeError, ValueError):
+        den = 4
+    if den not in (2, 4, 8, 16):
+        den = 4
+    return num, den
+
+
 def default_output_dir() -> Path:
     docs = None
     try:
@@ -1173,11 +1198,13 @@ class VocaloidTTSApp(tk.Tk):
         return self.choose_v4_path(startup) if answer else self.choose_v5_path(startup)
 
     def _bpm(self) -> float:
-        try:
-            value = float(str(self.bpm_var.get()).strip())
-        except Exception:
-            value = 120.0
-        return max(40.0, min(240.0, value))
+        raw = str(self.bpm_var.get())
+        value = parse_bpm(raw)
+        shown = self._fmt_num(value)
+        # 输入非法时程序会回落到 120，但框里还留着原文，用户以为用了自己填的。
+        if raw.strip() != shown:
+            self.bpm_var.set(shown)
+        return value
 
     @staticmethod
     def _fmt_num(value: object) -> str:
@@ -1188,17 +1215,13 @@ class VocaloidTTSApp(tk.Tk):
             return "120"
 
     def _meter(self) -> tuple[int, int]:
-        try:
-            num = int(str(self.num_var.get()).strip())
-        except Exception:
-            num = 4
-        num = max(1, min(16, num))
-        try:
-            den = int(str(self.den_var.get()).strip())
-        except Exception:
-            den = 4
-        if den not in (2, 4, 8, 16):
-            den = 4
+        num_raw = str(self.num_var.get())
+        den_raw = str(self.den_var.get())
+        num, den = parse_meter(num_raw, den_raw)
+        if num_raw.strip() != str(num):
+            self.num_var.set(str(num))
+        if den_raw.strip() != str(den):
+            self.den_var.set(str(den))
         return num, den
 
     def _mode(self) -> str:
@@ -2544,6 +2567,36 @@ class VocaloidTTSApp(tk.Tk):
 ToneTalkApp = VocaloidTTSApp
 
 
+def _install_excepthooks(app: VocaloidTTSApp) -> None:
+    """Tk 回调里的异常默认只打到控制台。
+
+    ``console=False`` 的构建里用户看不到任何东西，窗口只是「没反应」。这里统一
+    写日志，并且同一个异常只弹一次框——``after`` 回调出错时可能每帧都抛。
+    """
+    seen: set[str] = set()
+
+    def report(exc_type, exc, tb) -> None:
+        detail = "".join(traceback.format_exception(exc_type, exc, tb))
+        try:
+            app._append_log_file(f"[异常] {detail}")
+        except Exception:
+            pass
+        key = f"{exc_type.__name__}:{exc}"
+        if key in seen:
+            return
+        seen.add(key)
+        try:
+            messagebox.showerror(
+                "VocaloidTTS 出错了",
+                f"{exc_type.__name__}: {exc}\n\n详细信息已写入日志。")
+        except Exception:
+            pass
+
+    sys.excepthook = report
+    app.report_callback_exception = lambda _exc, val, tb: report(
+        type(val), val, tb)
+
+
 def main() -> None:
     if getattr(sys, "frozen", False) and sys.platform == "win32":
         try:
@@ -2579,4 +2632,5 @@ def main() -> None:
             raise SystemExit(1)
         return
     app = VocaloidTTSApp()
+    _install_excepthooks(app)
     app.mainloop()
