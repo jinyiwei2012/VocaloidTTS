@@ -82,6 +82,9 @@ def _number_token_to_chinese(tok: str, prev: str, next_: str) -> str:
     if "." in tok:
         whole, frac = tok.split(".", 1)
         return num_to_chinese(int(whole)) + "点" + "".join(_DIGITS[int(c)] for c in frac)
+    if len(tok) > 1 and tok.startswith("0"):
+        # 007 / 0123 这类编号要逐位读，int() 会把前导零吃掉
+        return "".join(_DIGITS[int(c)] for c in tok)
     if len(tok) == 4 and tok.startswith(("19", "20")) and next_ in ("年",):
         return "".join(_DIGITS[int(c)] for c in tok)
     if len(tok) >= 7 and not (prev and prev.isdigit()):
@@ -97,6 +100,10 @@ def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\u00a0", " ").replace("\u3000", " ")
+    # 千分位和负号必须在标点替换之前处理：半角逗号马上就要变成全角停顿，
+    # 负号不在任何分支里、会被静默丢掉（「温度-5度」读成「温度五度」）。
+    text = re.sub(r"(?<=\d),(?=\d{3})", "", text)
+    text = re.sub(r"(?<![\dA-Za-z])-(?=\d)", "负", text)
     # typographic punctuation -> concise set
     trans = {
         "，": "，", "、": "，", "；": "；", "：": "：", "。": "。",
@@ -289,13 +296,15 @@ def _pinyin_for_char(ch: str) -> tuple[str, int] | None:
 
 def _apply_tone_sandhi(syls: list[Syllable]) -> None:
     for i, s in enumerate(syls):
-        if s.pinyin == "yi" and s.tone == 1:
+        # 按汉字判定，不按拼音：衣/医/依/壹 的拼音也是 yi，布/步/部/怖 也是 bu，
+        # 按拼音匹配会把「衣服」读成 yì fu、「布置」读成 bú zhì。
+        if s.text == "一" and s.tone == 1:
             nxt = syls[i + 1] if i + 1 < len(syls) else None
             if nxt and nxt.tone == 4:
                 s.tone = 2
             elif nxt and nxt.tone in (1, 2, 3):
                 s.tone = 4
-        if s.pinyin == "bu" and s.tone == 4:
+        if s.text == "不" and s.tone == 4:
             nxt = syls[i + 1] if i + 1 < len(syls) else None
             if nxt and nxt.tone == 4:
                 s.tone = 2

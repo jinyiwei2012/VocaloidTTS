@@ -265,5 +265,31 @@ class UserDictionaryTests(unittest.TestCase):
         self.assertEqual([s.pinyin for s in plain], [s.pinyin for s in bad])
 
 
+class ToneSandhiScopeTests(unittest.TestCase):
+    def test_yi_and_bu_sandhi_only_touches_the_real_character(self):
+        # 衣/医 的拼音也是 yi，布/步 也是 bu；按拼音匹配会把它们一起改调
+        self.assertEqual([s.tone for s in text_to_syllables("衣服")], [1, 5])
+        self.assertEqual(text_to_syllables("医院")[0].tone, 1)
+        self.assertEqual([s.tone for s in text_to_syllables("布置")], [4, 4])
+
+    def test_yi_and_bu_themselves_still_change(self):
+        self.assertEqual(text_to_syllables("一天")[0].tone, 4)
+        self.assertEqual(text_to_syllables("不对")[0].tone, 2)
+
+
+class NumberEdgeTests(unittest.TestCase):
+    def test_thousands_separator_is_not_a_pause(self):
+        self.assertEqual(normalize_text("1,234元"), "一千二百三十四元")
+        self.assertEqual(normalize_text("1,234,567人"),
+                         "一百二十三万四千五百六十七人")
+
+    def test_negative_sign_is_read_as_fu(self):
+        self.assertEqual(normalize_text("温度-5度"), "温度负五度")
+
+    def test_leading_zeros_are_read_digit_by_digit(self):
+        self.assertEqual(normalize_text("007号"), "零零七号")
+        self.assertEqual(normalize_text("0123"), "零一二三")
+
+
 if __name__ == "__main__":
     unittest.main()
