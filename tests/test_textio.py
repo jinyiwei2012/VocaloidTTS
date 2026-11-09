@@ -63,5 +63,49 @@ class DecodeTextTests(unittest.TestCase):
         self.assertEqual(encoding, "gb18030")
 
 
+class BomOrderTests(unittest.TestCase):
+    def test_utf32_le_with_bom_is_not_read_as_utf16(self) -> None:
+        # FF FE 00 00 同时以 FF FE 开头，先判 UTF-16 会得到「NUL + 字符」
+        sample = "UTF-32 小端"
+        raw = b"\xff\xfe\x00\x00" + sample.encode("utf-32-le")
+        text, encoding = decode_text(raw)
+        self.assertEqual(text, sample)
+        self.assertEqual(encoding, "utf-32-le")
+
+    def test_utf32_be_with_bom(self) -> None:
+        sample = "UTF-32 大端"
+        raw = b"\x00\x00\xfe\xff" + sample.encode("utf-32-be")
+        text, encoding = decode_text(raw)
+        self.assertEqual(text, sample)
+        self.assertEqual(encoding, "utf-32-be")
+
+    def test_declared_encoding_that_fails_stays_with_that_encoding(self) -> None:
+        # UTF-8 BOM 后面跟非法字节，曾整份掉进 utf-16 分支读成韩文
+        raw = b"\xef\xbb\xbf" + b"\xff\xfe\xfd"
+        text, encoding = decode_text(raw)
+        self.assertTrue(encoding.startswith("utf-8-sig"))
+        self.assertFalse(any("\uac00" <= ch <= "\ud7af" for ch in text))
+
+
+class NoBomUtf16Tests(unittest.TestCase):
+    def test_ascii_utf16_be_without_bom(self) -> None:
+        text, encoding = decode_text("hello world".encode("utf-16-be"))
+        self.assertEqual(text, "hello world")
+        self.assertEqual(encoding, "utf-16-be")
+
+    def test_ascii_utf16_le_without_bom(self) -> None:
+        text, encoding = decode_text("hello world".encode("utf-16-le"))
+        self.assertEqual(text, "hello world")
+        self.assertEqual(encoding, "utf-16-le")
+
+    def test_pure_chinese_utf16_without_bom_never_yields_control_chars(self) -> None:
+        # 没有 NUL 分布可依据，不猜端序；但至少要挡住控制字符
+        for encoding in ("utf-16-be", "utf-16-le"):
+            with self.subTest(encoding=encoding):
+                text, _ = decode_text("你好世界".encode(encoding))
+                self.assertFalse(
+                    any(ord(ch) < 0x20 and ch not in "\t\n\r" for ch in text))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,9 +22,9 @@ v1.2.0 发布后对全仓做了首次完整审查（`python-code-review` + 人�
 
 | 批次 | 主题 | 条目 | 状态 |
 |---|---|---|---|
-| A | 中文听感 | A1–A3 | 待做 |
-| B | VSQX 导出数据 | B1–B3 | 待做 |
-| C | 文本导入编码 | C1–C3 | 待做 |
+| A | 中文听感 | A1–A3 | 已完成 |
+| B | VSQX 导出数据 | B1–B3 | 已完成 |
+| C | 文本导入编码 | C1–C3 | 已完成 |
 | D | 应用健壮性 | D1–D4 | 待做 |
 | E | Win32 平台层 | E1–E8 | 待做 |
 | F | 界面细节 | F1–F3 | 待做 |
@@ -115,28 +115,35 @@ v1.2.0 发布后对全仓做了首次完整审查（`python-code-review` + 人�
 
 ## 批 C：文本导入编码（P1）
 
-### C1 UTF-32LE 被当成 UTF-16LE [待复现]
+### C1 UTF-32LE 被当成 UTF-16LE [已复现]
 
-- **位置**：`vocaloidtts/textio.py`（BOM 探测段）
+- **位置**：`vocaloidtts/textio.py`（`_BOMS`、`decode_text`）
 - **现象**：UTF-32LE 的 BOM 是 `FF FE 00 00`，前两字节与 UTF-16LE 的 `FF FE` 相同。
-  若先判 UTF-16 就会按 2 字节切分，读出满屏 NUL 或乱码。
-- **修法**：BOM 判定按长度从长到短（4 字节 → 3 字节 → 2 字节），先试 UTF-32 再试 UTF-16。
-- **验证**：构造 UTF-32LE/UTF-32BE 字节样本，断言解码出原文。
+  实测 `"你好世界".encode("utf-32")` 被 `utf-16-le` 解成 `\x00你\x00好\x00世\x00界`；
+  UTF-32BE 更糟，走 `utf-16` fallback 解成 `\x00￾\x00恏\x00絙…`。
+- **修法**：`_BOMS` 按长度从长到短排（4 字节 → 3 字节 → 2 字节），加 `utf-32-le` / `utf-32-be`。
+- **验证**：构造 UTF-32LE/BE 字节样本，断言解码出原文且 encoding 标注正确。
 
-### C2 无 BOM 的 UTF-16BE 认不出 [待复现]
+### C2 无 BOM 的 UTF-16 认不出 [已复现]
 
-- **位置**：`vocaloidtts/textio.py`（同上）
-- **现象**：无 BOM 时只按 UTF-16LE 猜，UTF-16BE 文本读成乱码。
+- **位置**：`vocaloidtts/textio.py`（`_utf16_by_nul`、`decode_text`）
+- **现象**：无 BOM 时只按 UTF-16LE 猜，实测 `"hello world".encode("utf-16-be")`
+  被 `utf-8-sig` 解成 `\x00h\x00e\x00l…`（满是 NUL）。
 - **修法**：无 BOM 时用 NUL 字节分布判端序（ASCII 文本在 BE 下 NUL 在偶数位、LE 下在奇数位），
   命中才采用，否则维持现有 UTF-8 → GBK 顺序。
-- **验证**：构造无 BOM 的 UTF-16BE/LE 样本，断言都能正确解码。
+  **已知限制**：纯中文的 UTF-16 没有 NUL 可依据，与普通 UTF-8 无法可靠区分，
+  因此不猜——宁可留成乱码让用户换编码，也不做会误伤正常文本的猜测。
+- **验证**：ASCII 为主的 UTF-16BE/LE 样本断言正确解码；纯中文 UTF-16 断言不产生控制字符。
 
-### C3 解码失败时没剥掉 BOM [待复现]
+### C3 解码失败时没剥掉 BOM [已复现]
 
-- **位置**：`vocaloidtts/textio.py`（候选编码循环）
-- **现象**：某编码解码抛错后直接 `break`，BOM 字符留在文本开头，第一条歌词带 `\ufeff`。
-- **修法**：解码成功后统一 `lstrip("\ufeff")`，与失败分支解耦。
-- **验证**：构造「BOM + 非法字节」样本，断言输出首字符不是 BOM。
+- **位置**：`vocaloidtts/textio.py`（`decode_text` 的 BOM 分支）
+- **现象**：BOM 分支解码失败后 `break` 掉进 fallback，实测 `EF BB BF FF FE FD`
+  整份被 `utf-16` 读成 `믯﾿\ufdff`（韩文 + 替换符），编码来源也丢了。
+- **修法**：BOM 分支失败时按声明编码 + `errors="replace"` 解码并返回，
+  编码标注加 `(replace)` 后缀，不再掉进 utf-16；所有返回路径统一 `lstrip("\ufeff")`。
+  另外 fallback 增加一条：解出控制字符（NUL、`\x16` 等）的结果一律否决。
+- **验证**：构造「BOM + 非法字节」样本，断言 encoding 以 `utf-8-sig` 开头、结果里没有韩文。
 
 ---
 
