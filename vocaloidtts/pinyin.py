@@ -165,6 +165,10 @@ _FINAL_PH = {
     "er": "@`", "r": "r",
 }
 
+# 独立成音节的鼻音：嗯(n) / 呣(m) / 哼(ng)。它们不在 _FINAL_PH 里，
+# 落空后会被兜底成 "a"，把「嗯」唱成「啊」。三个音素 VOCALOID 中文表都有。
+_SYLLABIC_NASAL = {"n": "n", "m": "m", "ng": "N"}
+
 _ZERO_INITIAL = {
     "a": "a", "o": "o", "e": "7", "ai": "aI", "ei": "ei", "ao": "AU",
     "ou": "@U", "an": "a_n", "en": "@_n", "ang": "AN", "eng": "@N",
@@ -201,6 +205,9 @@ def pinyin_to_phonemes(py: str) -> str:
     py = py.strip().lower().replace("ü", "v").replace("u:", "v")
     if not py:
         return "a"
+    nasal = _SYLLABIC_NASAL.get(py)
+    if nasal:
+        return nasal
     if py in _ZERO_INITIAL:
         return _ZERO_INITIAL[py]
     ini, fin = split_initial_final(py)
@@ -294,7 +301,16 @@ def _pinyin_for_char(ch: str) -> tuple[str, int] | None:
     return _split_pinyin(raw)
 
 
-def _apply_tone_sandhi(syls: list[Syllable]) -> None:
+def _apply_tone_sandhi(syls: list[Syllable],
+                       neutral_syls: set[int] | frozenset[int] = frozenset()) -> None:
+    """一/不 变调与三声连读。
+
+    两步用的基准不同，不能合并：
+    - 一/不 看**词法**声调。「一个」的「个」原调是去声，所以「一」读阳平；
+      必须先于轻声化，否则「个」成了 5 声就查不出去声。
+    - 三声连读要**跳过**即将轻声化的音节。「姐姐」后字轻声，前字保持三声；
+      不跳过就会读成 jié jie。neutral_syls 是这些音节的对象 id 集合。
+    """
     for i, s in enumerate(syls):
         # 按汉字判定，不按拼音：衣/医/依/壹 的拼音也是 yi，布/步/部/怖 也是 bu，
         # 按拼音匹配会把「衣服」读成 yì fu、「布置」读成 bú zhì。
@@ -310,6 +326,8 @@ def _apply_tone_sandhi(syls: list[Syllable]) -> None:
                 s.tone = 2
     # 3-3 sandhi, left to right
     for i in range(len(syls) - 1):
+        if id(syls[i]) in neutral_syls or id(syls[i + 1]) in neutral_syls:
+            continue
         if syls[i].tone == 3 and syls[i + 1].tone == 3:
             syls[i].tone = 2
 
@@ -362,6 +380,13 @@ _NEUTRAL_WORDS = {
     ).split()
 }
 
+# 含轻声词但不该轻声的词形。查表是按子串做的，「东西南北」里的「东西」
+# 会被当成「买东西」的轻声词；只有泛指物品或骂人的「东西」才读 dōng xi。
+_NEUTRAL_EXCEPT = frozenset((
+    "东西南北", "东西南北中", "东西向", "东西方", "东西半球",
+))
+_EXCEPT_LENS = (5, 4, 3)
+
 # 地 as an adverbial suffix is de5, but 土地/大地/目的地 etc. keep dì.
 _DI_ADVERB_CHARS = set("慢轻悄静默偷狠渐缓匆猛愤疯忽蓦霍紧紧牢牢深深远远早早好好美美甜甜冷冷热热淡淡浓浓")
 _DI_ADVERBS = set(
@@ -393,14 +418,15 @@ def _neutral_marks(text: str, reporter: Reporter | None = None) -> set[int]:
         if (i & 0xFF) == 0:
             rep.check()
             words_rep.report("parse", i / n)
-        for length in (3, 2):
-            word = text[i:i + length]
-            pos = _NEUTRAL_WORDS.get(word)
-            if pos:
-                for p in pos:
-                    if i + p < n:
-                        marks.add(i + p)
-                break
+        if not any(text[i:i + ln] in _NEUTRAL_EXCEPT for ln in _EXCEPT_LENS):
+            for length in (3, 2):
+                word = text[i:i + length]
+                pos = _NEUTRAL_WORDS.get(word)
+                if pos:
+                    for p in pos:
+                        if i + p < n:
+                            marks.add(i + p)
+                    break
         # AA verb reduplication: 看看 / 试试 / 想想
         if i + 1 < n and text[i] == text[i + 1] and text[i] in _REDUP_VERBS:
             marks.add(i + 1)
@@ -570,7 +596,8 @@ def text_to_syllables(text: str,
             if ch.isascii() and ch.isalpha():
                 # Letters belong to the same prosodic phrase, but their names
                 # are not Chinese words eligible for 一/不/3+3 sandhi.
-                _apply_tone_sandhi(chinese_run)
+                _apply_tone_sandhi(chinese_run,
+                                   {id(local[pos]) for pos, _ in neutral_positions})
                 chinese_run = []
                 for py in _LATIN[ch.lower()].split():
                     # 一个字母会拆成好几个音节（w -> da/bu/liu），共用一个 src
@@ -591,7 +618,8 @@ def text_to_syllables(text: str,
                 neutral_positions.append((len(local) - 1, ch))
         # Tone sandhi (一/不/3+3) is based on the lexical tones, before the
         # neutral-tone reduction is applied.
-        _apply_tone_sandhi(chinese_run)
+        _apply_tone_sandhi(chinese_run,
+                           {id(local[pos]) for pos, _ in neutral_positions})
         for pos, ch in neutral_positions:
             s = local[pos]
             s.tone = 5

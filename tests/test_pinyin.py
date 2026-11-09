@@ -3,7 +3,8 @@ import unittest
 
 from vocaloidtts.edits import CharEdit
 from vocaloidtts.pinyin import (normalize_text, num_to_chinese,
-                                pinyin_text_to_syllables, text_to_syllables)
+                                pinyin_text_to_syllables, pinyin_to_phonemes,
+                                text_to_syllables)
 from vocaloidtts.progress import Cancelled, Reporter
 
 
@@ -289,6 +290,47 @@ class NumberEdgeTests(unittest.TestCase):
     def test_leading_zeros_are_read_digit_by_digit(self):
         self.assertEqual(normalize_text("007号"), "零零七号")
         self.assertEqual(normalize_text("0123"), "零一二三")
+
+
+class NeutralToneTests(unittest.TestCase):
+    """轻声与三声连读的先后：后字轻声时，前字保持三声。"""
+
+    def test_reduplicated_third_tone_keeps_the_first_tone(self):
+        # 姐姐 jie3 jie5：后字轻声就不触发三声连读，前字不该变阳平
+        for word in ("姐姐", "奶奶", "宝宝", "姥姥"):
+            with self.subTest(word=word):
+                self.assertEqual([s.tone for s in text_to_syllables(word)],
+                                 [3, 5])
+
+    def test_plain_third_tone_pairs_still_sandhi(self):
+        self.assertEqual([s.tone for s in text_to_syllables("你好")], [2, 3])
+
+    def test_direction_compound_is_not_neutral(self):
+        # 「东西南北」的「西」是方位，读 xī；只有泛指物品才读轻声
+        tones = [s.tone for s in text_to_syllables("东西南北")]
+        self.assertEqual(tones[1], 1)
+        self.assertEqual([s.tone for s in text_to_syllables("东西向")][1], 1)
+
+    def test_item_compound_is_still_neutral(self):
+        self.assertEqual([s.tone for s in text_to_syllables("买东西")][2], 5)
+        self.assertEqual([s.tone for s in text_to_syllables("东西")][1], 5)
+
+
+class NasalPhonemeTests(unittest.TestCase):
+    def test_syllabic_nasals_map_to_nasal_phonemes(self):
+        # 「嗯」的拼音是 n，落空兜底会变成 a，唱出来是「啊」
+        self.assertEqual(pinyin_to_phonemes("n"), "n")
+        self.assertEqual(pinyin_to_phonemes("ng"), "N")
+        self.assertEqual(pinyin_to_phonemes("m"), "m")
+
+    def test_syllabic_nasal_reaches_the_note(self):
+        self.assertEqual([s.phonemes for s in text_to_syllables("嗯")], ["n"])
+
+    def test_regular_nasal_finals_are_untouched(self):
+        self.assertEqual(pinyin_to_phonemes("en"), "@_n")
+        self.assertEqual(pinyin_to_phonemes("an"), "a_n")
+        self.assertEqual(pinyin_to_phonemes("ang"), "AN")
+        self.assertEqual(pinyin_to_phonemes("ing"), "iN")
 
 
 if __name__ == "__main__":
