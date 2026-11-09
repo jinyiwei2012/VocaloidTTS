@@ -18,11 +18,12 @@ def formats() -> dict[str, Format]:
     """返回 ``key -> Format``，首次调用时构建并缓存。"""
     global _cache
     if _cache is None:
-        from . import svip, svip3, ustx, vsqx
+        from . import svip, svip3, svp, ustx, vsqx
 
         _cache = {
             entry.key: entry
-            for entry in (vsqx.FORMAT, svip3.FORMAT, ustx.FORMAT, svip.FORMAT)
+            for entry in (vsqx.FORMAT, svp.FORMAT, svip3.FORMAT,
+                          ustx.FORMAT, svip.FORMAT)
         }
     return _cache
 

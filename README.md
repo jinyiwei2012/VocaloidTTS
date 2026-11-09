@@ -19,7 +19,7 @@
 1. 解压 Releases 里的 zip，双击 `VocaloidTTS.exe`；
 2. 左上角选 **中文文本** 或 **拼音输入**；
 3. 输入文字，或点预设（自然朗读 / 戏剧朗读 / 新闻播报 / 甜系撒娇 / 气声耳语 / 故事旁白）；
-4. 点 **生成工程 ▼** 选格式：`VOCALOID VSQX`（默认）、`X Studio 3 (.svip3)`、`OpenUTAU (.ustx)`、`OpenSVIP (.svip)`；
+4. 点 **生成工程 ▼** 选格式：`VOCALOID VSQX`（默认）、`Synthesizer V (.svp)`、`X Studio 3 (.svip3)`、`OpenUTAU (.ustx)`、`OpenSVIP (.svip)`；
 5. 用对应软件打开：V4/V5 用 `Ctrl+O` 打开 `.vsqx`；X Studio 3 / OpenUTAU 打开后把临时歌手改选为本机声库；
 6. 按空格试听；V4/V5 可 `文件 → 导出 → 波形` 导出 WAV。
 
@@ -74,6 +74,7 @@ python VocaloidTTS.py
 | 格式 | 扩展名 | 说明 |
 |---|---|---|
 | VOCALOID VSQX | `.vsqx` | V4/V5 原生工程 |
+| Synthesizer V | `.svp` | Synthesizer V Studio 2 工程；歌词写汉字，发音交给编辑器生成 |
 | X Studio 3 | `.svip3` | 网易云 X Studio 3 工程；protobuf 手写，无额外依赖 |
 | OpenUTAU | `.ustx` | OpenUTAU 0.10 YAML 工程 |
 | OpenSVIP | `.svip` | JSON 交换工程，可继续转换 |
