@@ -60,7 +60,7 @@ class SvpExportTests(unittest.TestCase):
 
     def test_registry_lists_svp(self) -> None:
         self.assertEqual(formats()["svp"].extension, ".svp")
-        self.assertEqual(len(formats()), 5)
+        self.assertEqual(len(formats()), 6)
 
 
 if __name__ == "__main__":

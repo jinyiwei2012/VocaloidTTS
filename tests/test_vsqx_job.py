@@ -45,7 +45,7 @@ class VsqxJobTests(unittest.TestCase):
                             for field, expected in [("t", note.start), ("dur", note.dur),
                                                     ("n", note.midi), ("v", note.velocity)]:
                                 self.assertEqual(int(node.findtext("{*}" + field)), expected)
-                            self.assertEqual(node.findtext("{*}y"), lyric_for(note))
+                            self.assertEqual(node.findtext("{*}y"), note.lyric)
                             self.assertEqual(node.findtext("{*}p"), note.phonemes)
                         controls = {}
                         for node in root.findall(".//{*}cc"):
@@ -90,7 +90,8 @@ class VsqxGuardTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         write_vsqx(song, str(Path(directory) / "x.vsqx"), bank)
 
-    def test_chinese_lyric_is_written_as_han_characters(self):
+    def test_chinese_lyric_is_written_as_pinyin(self):
+        # VOCALOID4/5 的中文歌词栏按拼音解析，写汉字它认不出音节
         from vocaloidtts.vsqx import write_vsqx
 
         song = compose("你好世界", VoiceOptions(seed=1))
@@ -100,7 +101,7 @@ class VsqxGuardTests(unittest.TestCase):
             write_vsqx(song, str(path), bank)
             root = ET.parse(path).getroot()
             lyrics = [node.findtext("{*}y") for node in root.findall(".//{*}note")]
-            self.assertEqual(lyrics, ["你", "好", "世", "界"])
+            self.assertEqual(lyrics, ["ni", "hao", "shi", "jie"])
 
 
 if __name__ == "__main__":

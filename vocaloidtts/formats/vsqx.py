@@ -56,7 +56,10 @@ def _note_lines(song: Song) -> str:
             f"\t\t\t\t<dur>{int(n.dur)}</dur>\n"
             f"\t\t\t\t<n>{int(max(0, min(127, n.midi)))}</n>\n"
             f"\t\t\t\t<v>{int(max(1, min(127, n.velocity)))}</v>\n"
-            f"\t\t\t\t<y>{_cdata(lyric_for(n))}</y>\n"
+            # VSQX 的 <y> 要拼音，不是汉字：VOCALOID4/5 的中文歌词栏按拼音
+            # 解析，写汉字它认不出音节（LibreSVIP 的 vsqx 插件同样写拼音，
+            # 并在音素缺失时提示用户用「Convert Phonemes」重算）。
+            f"\t\t\t\t<y>{_cdata(n.lyric or lyric_for(n))}</y>\n"
             f"\t\t\t\t<p>{_cdata(n.phonemes or 'a')}</p>\n"
             "\t\t\t\t<nStyle>\n"
             f"\t\t\t\t\t<v id=\"accent\">{accent}</v>\n"
