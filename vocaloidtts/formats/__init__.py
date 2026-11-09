@@ -19,14 +19,14 @@ def formats() -> dict[str, Format]:
     global _cache
     if _cache is None:
         from . import (acep, aisp, ass, lrc, mid, s5p, srt, svip, svip3, svp,
-                       ustx, vpr, vsqx, y77)
+                       tlp, ustx, vpr, vsqx, y77)
 
         _cache = {
             entry.key: entry
             for entry in (vsqx.FORMAT, vpr.FORMAT, svp.FORMAT, s5p.FORMAT,
                           mid.FORMAT, acep.FORMAT, svip3.FORMAT, ustx.FORMAT,
-                          svip.FORMAT, y77.FORMAT, aisp.FORMAT, lrc.FORMAT,
-                          srt.FORMAT, ass.FORMAT)
+                          svip.FORMAT, y77.FORMAT, aisp.FORMAT, tlp.FORMAT,
+                          lrc.FORMAT, srt.FORMAT, ass.FORMAT)
         }
     return _cache
 
