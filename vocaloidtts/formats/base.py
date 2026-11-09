@@ -77,6 +77,38 @@ def curve_values(song: Song, cid: str) -> list[tuple[int, int]]:
     return sorted(song.controls.get(cid, []), key=lambda p: p[0])
 
 
+def pitch_samples(song: Song, note: Note, count: int = 500) -> list[float]:
+    """把音符内的 PIT 曲线等距采样成 ``count`` 个点，单位是音分。
+
+    Y77 和 AISingers 都把整条音高曲线塞进音符里（固定点数采样），一个用半音、
+    一个用十分之一半音，所以这里统一吐音分，让各格式自己换算。
+    """
+    points = [(float(t), float(c)) for t, c in pit_cents(song, note)]
+    if not points:
+        return [0.0] * count
+    ticks = [point[0] for point in points]
+    duration = max(1.0, float(note.dur))
+    samples: list[float] = []
+    for index in range(count):
+        target = duration * index / count
+        position = bisect_right(ticks, target) - 1
+        if position < 0:
+            samples.append(points[0][1])
+            continue
+        if position >= len(points) - 1:
+            samples.append(points[-1][1])
+            continue
+        left_tick, left_value = points[position]
+        right_tick, right_value = points[position + 1]
+        span = right_tick - left_tick
+        if span <= 0:
+            samples.append(right_value)
+            continue
+        ratio = (target - left_tick) / span
+        samples.append(left_value + (right_value - left_value) * ratio)
+    return samples
+
+
 def db_value(vsqx: int) -> float:
     """VSQX DYN 0..127 -> a mild OpenUTAU dyn curve (dB-ish)."""
     return max(-24.0, min(24.0, (float(vsqx) - 64.0) * 0.2))
