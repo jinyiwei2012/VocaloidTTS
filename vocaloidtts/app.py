@@ -32,8 +32,7 @@ from .voicebank import (Voicebank, VoicebankRoot, add_voicebank_root,
                         set_v4_exe, set_v5_exe, v4_available, v5_available)
 from .jobfile import default_job_path, write_job
 from .textio import decode_text
-from .vsqx import write_vsqx
-from .exporters import FORMATS, write_svip, write_svip3, write_ustx
+from .formats import FORMATS
 
 FONT = "Microsoft YaHei UI"
 BG = "#0b0e13"
@@ -2045,20 +2044,14 @@ class VocaloidTTSApp(tk.Tk):
                 # 写文件前再查一次：用户可能在 88% 处刚点了取消
                 reporter.check()
                 job_path = None
-                written = path
+                written = meta.write(song, path, voicebank=bank, title=title)
                 if fmt == "vsqx":
-                    written = write_vsqx(song, path, bank, title=title)
+                    # VSQX 额外刷新 V4 任务插件读的数据文件；失败不影响工程
                     try:
                         job_path = write_job(song, default_job_path(), title=title)
                     except Exception as exc:
                         self._post(self._log,
                                    f"插件数据写入失败（工程已生成）：{exc}")
-                elif fmt == "svip3":
-                    written = write_svip3(song, path)
-                elif fmt == "ustx":
-                    written = write_ustx(song, path)
-                else:
-                    written = write_svip(song, path)
                 reporter.stage("write", 1.0)
                 payload = {"song": song, "path": written, "fmt": fmt,
                            "meta": meta, "open_after": open_after,
@@ -2645,7 +2638,8 @@ def main() -> None:
             banks = detect_voicebanks()
             bank = banks[0] if banks else Voicebank(
                 "BK8H76TAEHXWSKDB", "LuoTianyi", "洛天依 · 中文 Meng", 4, 0)
-            write_vsqx(song, out, bank, title="VocaloidTTS Selftest")
+            FORMATS["vsqx"].write(song, out, voicebank=bank,
+                                  title="VocaloidTTS Selftest")
             # 用临时 job：默认路径是用户 V4 任务插件正在读的文件，
             # 跑一次自检就把他们的工程数据冲掉了。
             write_job(song, tmp / "VocaloidTTS_selftest_job.txt",
