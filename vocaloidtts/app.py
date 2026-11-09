@@ -15,6 +15,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 from . import __version__
+from .atomicio import atomic_write_text
 from .edits import (CharEdit, EditSet, load_userdict, parse_reading,
                     save_userdict)
 from .paths import appdata_dir, localappdata_dir
@@ -287,6 +288,11 @@ class RoundedSlider(tk.Canvas):
         self.set(self.default)
         self.command()
         return "break"
+
+
+#: 导入文本的大小上限。20 万字符的 UTF-8 大约 600 KB，8 MB 足够宽裕，
+#: 又不至于让一个手滑拖进来的 2 GB 文件先把内存吃光再谈截断。
+_MAX_TEXT_BYTES = 8 * 1024 * 1024
 
 
 def parse_bpm(raw: str) -> float:
@@ -1290,6 +1296,18 @@ class VocaloidTTSApp(tk.Tk):
 
     def _load_text_file(self, path: str) -> None:
         p = Path(path)
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            messagebox.showerror("无法读取文件", f"{p}\n\n{exc}")
+            return
+        if size > _MAX_TEXT_BYTES:
+            messagebox.showerror(
+                "文件太大",
+                f"{p}\n\n{size / 1048576:.1f} MB，超过 "
+                f"{_MAX_TEXT_BYTES // 1048576} MB 上限。\n\n"
+                "歌词文本不需要这么大，请拆分后再导入。")
+            return
         try:
             raw = p.read_bytes()
         except Exception as exc:
@@ -2448,8 +2466,10 @@ class VocaloidTTSApp(tk.Tk):
             "recent": self.recent[:10],
         }
         try:
-            with open(self._settings_path(), "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            # 原子写：设置文件写到一半被杀掉时，_load_settings 会读到截断的
+            # JSON 并把所有偏好重置。临时文件 + replace 至少保证旧文件还在。
+            atomic_write_text(self._settings_path(),
+                              json.dumps(data, ensure_ascii=False, indent=2))
         except Exception:
             pass
 

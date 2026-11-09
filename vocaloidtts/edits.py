@@ -10,6 +10,7 @@ edits 以原文中的字符偏移为键：0 起算，指向原始文本里的那
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,16 +68,28 @@ class CharEdit:
             except (TypeError, ValueError, OverflowError):
                 return None
 
+        def _clamp(key: str, lo: float, hi: float) -> float | None:
+            """读一个浮点并夹到合法区间；inf / nan / 坏类型一律当成没设。"""
+            value = _num(key, float)
+            if value is None or not math.isfinite(value):
+                return None
+            return max(lo, min(hi, value))
+
         pinyin = str(raw.get("pinyin") or "").strip().lower()
         tone = _num("tone", int) or 0
+        # 三个数值字段都来自项目文件，谁都能手改。下游虽然会再夹一次，
+        # 但让坏值停在解析层更容易查，也不会在别处被当成合法输入。
+        stress = _clamp("stress", -1.0, 1.0)
+        dur_scale = _clamp("dur_scale", 0.5, 2.0)
+        pause = _clamp("pause_ms", 0.0, 4000.0)
         return cls(
             char=str(raw.get("char") or ""),
             pinyin=pinyin,
             tone=max(0, min(5, tone)),
             phonemes=str(raw.get("phonemes") or "").strip(),
-            stress=_num("stress", float),
-            dur_scale=_num("dur_scale", float),
-            pause_ms=_num("pause_ms", int),
+            stress=stress,
+            dur_scale=dur_scale,
+            pause_ms=None if pause is None else int(pause),
         )
 
 
@@ -184,7 +197,7 @@ def load_userdict(path: Path) -> dict[str, str]:
     try:
         # utf-8-sig：记事本存的「UTF-8 带 BOM」也能读，否则整份词典静默失效
         raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {}
     words = raw.get("words") if isinstance(raw, dict) else None
     if not isinstance(words, dict):

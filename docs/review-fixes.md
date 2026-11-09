@@ -8,7 +8,7 @@ v1.2.0 发布后对全仓做了首次完整审查（`python-code-review` + 人�
 累计记录 150 余条。影响真实数据或常见操作的 30 余条已经修完，本文是**剩余部分**
 的执行清单：写清每条的现象、位置、修法、验证方式，按批次推进。
 
-验证基线：**167 项测试通过**（1 项按平台跳过），
+验证基线：**205 项测试通过**（1 项按平台跳过），
 `ruff check vocaloidtts tests tools` 无告警，`VocaloidTTS.py --selftest` 退出码 0。
 
 ## 阅读约定
@@ -29,6 +29,7 @@ v1.2.0 发布后对全仓做了首次完整审查（`python-code-review` + 人�
 | E | Win32 平台层 | E1–E8 | 已完成（E1/E2 复测为误报，已撤销） |
 | F | 界面细节 | F1–F3 | 已完成（F2/F3 复测后撤销） |
 | G | 收尾与更正 | G1–G2 | 已完成 |
+| H | 输入防御（畸形输入） | H1–H7 | 已完成 |
 | N | 暂不修（第三轮） | N1–N6 | 记录在案 |
 
 ---
@@ -295,6 +296,84 @@ Tk 的 `tk scaling` 与进程 DPI 感知（`SetProcessDpiAwareness`）是两套�
 
   句尾停顿已经计入（带句号比不带多 15 tick）。**这条是误报**，在本文与
   `docs/improvements.md` 里都标注为「已复测，不成立」，不再列入待修。
+
+---
+
+## 批 H：输入防御（P2）
+
+用户会往输入框里粘任何东西。这一批先用探针把「离谱输入」喂进核心流程，
+找出真正抛异常的路径，再照着修——不靠猜。
+
+探针覆盖 60 个文本用例、60 个导出用例、22 个文件用例。结论：绝大多数极端值
+已经被 `compose()` 的 clamp（bpm 30–300、拍号 1–16、pitch 36–84、
+rate 0.6–1.6 等）和导出器的异常兜底接住了，**真正会抛异常的只有两处**。
+其余几条是同一类缺陷漏了一处、或者「不崩但会留下坏数据」的防御性加固。
+
+### H1 超长数字串触发 int() 上限 [已复现，已修复]
+
+- **位置**：`vocaloidtts/pinyin.py`（`_number_token_to_chinese`、`normalize_text.repl`）
+- **现象**：`"9" * 5000 + "%"` 让 `normalize_text` 抛
+  `ValueError: Exceeds the limit (4300 digits) for integer string conversion`。
+  Python 3.11+ 默认只让 `int()` 收 4300 位十进制串。
+- **修法**：加 `_MAX_INT_DIGITS = 4000`，超过就逐位读（`_digits_to_chinese`）。
+  百分号分支保留「按数值读」的语义（`1000000%` = 百分之一百万），
+  只有长到 `int()` 都不收的超长串才退回逐位。
+- **验证**：`ExtremeTextTests` 3 项；探针的文本用例从 2 失败变成 0 失败。
+
+### H2 两万层嵌套 JSON 抛 RecursionError [已复现，已修复]
+
+- **位置**：`vocaloidtts/project.py`（`load_project`）、`vocaloidtts/edits.py`（`load_userdict`）
+- **现象**：`json.loads("[" * 20000 + "]" * 20000)` 抛 `RecursionError`。
+  它不是 `ValueError`，`load_project` 原有的 `except ValueError` 接不住，
+  会绕过界面的错误提示直接冒到 Tk 回调。
+- **修法**：`load_project` 捕获 `RecursionError` 并转成
+  `ValueError("项目文件嵌套太深，无法解析")`；`load_userdict` 的捕获列表
+  补上 `RecursionError`。
+- **验证**：`ExtremeProjectTests.test_deeply_nested_json_becomes_a_clear_error`。
+
+### H3 job 文件的 TITLE 漏了转义 [已修复]
+
+- **位置**：`vocaloidtts/jobfile.py`（`write_job`）
+- **现象**：`_field()` 修了 NOTE 行的 TAB/换行注入（注释里还留着实测案例），
+  但 `f"TITLE\t{title}"` 直接拼。标题里带换行会往 job 文件里插一行伪造内容。
+- **修法**：`TITLE` 也过一遍 `_field()`。
+- **验证**：`ExtremeExportTests.test_job_title_cannot_inject_extra_rows`
+  断言只有一行 `TITLE`、且不含换行。
+
+### H4 `CharEdit` 的三个数值字段没有范围 [已修复]
+
+- **位置**：`vocaloidtts/edits.py`（`CharEdit.from_dict`）
+- **现象**：`stress` / `dur_scale` / `pause_ms` 从项目文件读入时只做类型转换。
+  下游 `_assign_timing` 虽然会再夹一次（40–1600 ms、0–4000 ms），
+  但让坏值停在解析层更容易查，也不会在别处被当成合法输入。
+- **修法**：加 `_clamp()`，`stress` 夹到 -1..1、`dur_scale` 0.5..2.0、
+  `pause_ms` 0..4000；`inf` / `nan` 一律当成「没设」。
+- **验证**：`ExtremeProjectTests` 2 项。
+
+### H5 项目文件的 inf / nan 会流进生成 [已修复]
+
+- **位置**：`vocaloidtts/project.py`（`Project.from_dict`）
+- **现象**：Python 的 `json` 默认接受 `NaN` / `Infinity` 字面量，
+  `{"bpm": Infinity}` 会被读成 `float('inf')`。
+- **修法**：`_num()` 和 `options` 的浮点转换都加 `math.isfinite` 检查，
+  非有限值退回默认。
+- **验证**：`ExtremeProjectTests.test_infinite_and_nan_options_fall_back_to_defaults`。
+
+### H6 导入文本先读全文再截断 [已修复]
+
+- **位置**：`vocaloidtts/app.py`（`_load_text_file`）
+- **现象**：`p.read_bytes()` 读完整文件，之后才检查 20 万字符。
+  手滑拖进一个 2 GB 的文件会先占满内存。
+- **修法**：先 `stat().st_size`，超过 `_MAX_TEXT_BYTES`（8 MB）直接提示拒绝。
+- **验证**：需手工拖一个大文件确认提示；判断逻辑本身是纯比较。
+
+### H7 设置文件是非原子写 [已修复]
+
+- **位置**：`vocaloidtts/app.py`（`_save_settings`）
+- **现象**：`open(..., "w")` 写到一半被杀掉会留下截断的 JSON，
+  `_load_settings` 读到后把所有偏好重置。
+- **修法**：改用 `atomic_write_text`。
+- **验证**：全量测试通过；「写到一半被杀」的场景无法自动模拟。
 
 ---
 

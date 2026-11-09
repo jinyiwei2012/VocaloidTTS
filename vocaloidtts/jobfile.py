@@ -29,7 +29,7 @@ def write_job(song: Song, path: str | Path | None = None,
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "# VocaloidTTS job v2",
-        f"TITLE\t{title}",
+        f"TITLE\t{_field(title)}",
         f"BASE\t{song.options.pitch}",
         f"PBS\t{song.options.pbs}",
         f"TOTAL\t{song.total_ticks}",

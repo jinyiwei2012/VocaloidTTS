@@ -76,9 +76,21 @@ def num_to_chinese(n: int) -> str:
 
 _UNIT_WORDS = set("元人个米吨次年月日号页条张件位名户家辆台套分时里克升斤岁倍份期届级层楼室排座项种类款批组队场轮票卡码")
 
+#: Python 3.11+ 的 int() 默认只接受 4300 位十进制串，超了直接抛 ValueError。
+#: 用户往输入框里粘一串 5000 位的「9」不该让整次生成失败，所以超过这个长度
+#: 的数字一律逐位读，不经过 int()。
+_MAX_INT_DIGITS = 4000
+
+
+def _digits_to_chinese(digits: str) -> str:
+    """逐位读，不经过 int()。"""
+    return "".join(_DIGITS[int(c)] for c in digits if c in "0123456789")
+
 
 def _number_token_to_chinese(tok: str, prev: str, next_: str) -> str:
     """Read a run of digits in a natural way (years / phone / decimals)."""
+    if len(tok) > _MAX_INT_DIGITS:
+        return _digits_to_chinese(tok)
     if "." in tok:
         whole, frac = tok.split(".", 1)
         return num_to_chinese(int(whole)) + "点" + "".join(_DIGITS[int(c)] for c in frac)
@@ -123,9 +135,15 @@ def normalize_text(text: str) -> str:
         prev = text[start - 1] if start else ""
         nxt = text[end] if end < len(text) else ""
         if tok.endswith("%"):
+            # 百分号后的数字按数值读（1000000% = 百分之一百万），不按逐位；
+            # 只有长到 int() 都不肯收的超长串才退回逐位。
             number = tok[:-1]
-            spoken = (_number_token_to_chinese(number, prev, nxt) if "." in number
-                      else num_to_chinese(int(number)))
+            if len(number) > _MAX_INT_DIGITS:
+                spoken = _digits_to_chinese(number)
+            elif "." in number:
+                spoken = _number_token_to_chinese(number, prev, nxt)
+            else:
+                spoken = num_to_chinese(int(number))
             return "百分之" + spoken
         return _number_token_to_chinese(tok, prev, nxt)
 

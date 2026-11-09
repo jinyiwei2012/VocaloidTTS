@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
@@ -64,7 +65,11 @@ class Project:
                     elif isinstance(default, int):
                         kwargs[key] = int(value)
                     elif isinstance(default, float):
-                        kwargs[key] = float(value)
+                        # json 允许 NaN / Infinity 字面量，直接塞进来会让
+                        # 后面的 int() 或格式化在生成时炸掉。
+                        number = float(value)
+                        kwargs[key] = (number if math.isfinite(number)
+                                       else default)
                     elif isinstance(default, str):
                         kwargs[key] = str(value)
                     else:
@@ -79,9 +84,12 @@ class Project:
 
         def _num(key: str, default, cast):
             try:
-                return cast(raw.get(key, default))
+                value = cast(raw.get(key, default))
             except (TypeError, ValueError, OverflowError):
                 return default
+            if isinstance(value, float) and not math.isfinite(value):
+                return default
+            return value
 
         text_raw = raw.get("text")
         return cls(
@@ -106,6 +114,10 @@ def load_project(path: Path) -> Project:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except OSError as exc:
         raise ValueError(f"读不到项目文件：{exc}") from exc
+    except RecursionError as exc:
+        # json.loads 在 C 层递归，两万层嵌套就会抛 RecursionError；
+        # 它不是 ValueError，不接住会绕过界面的错误提示直接冒到 Tk 回调。
+        raise ValueError("项目文件嵌套太深，无法解析") from exc
     except ValueError as exc:
         raise ValueError(f"项目文件不是合法 JSON：{exc}") from exc
     if not isinstance(raw, dict):
