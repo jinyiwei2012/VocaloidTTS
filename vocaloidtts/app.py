@@ -917,8 +917,9 @@ class VocaloidTTSApp(tk.Tk):
                        activebackground=ACCENT, activeforeground="#08211f",
                        relief="flat", bd=0, font=(FONT, 9))
         self._gen_menu = menu
-        for key in ("vsqx", "svip3", "ustx", "svip"):
-            meta = FORMATS[key]
+        # 直接遍历注册表：以前这里钉死了一个四元组，加了 svp / mid 之后
+        # 菜单里根本选不到，格式写了却没人能用。
+        for key, meta in FORMATS.items():
             menu.add_command(
                 label=f"{meta['short']}  ·  {meta['extension']}",
                 command=lambda k=key: self.generate(fmt=k))
