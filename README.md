@@ -138,7 +138,15 @@ python -m PyInstaller --noconfirm --clean --onedir ^
   VocaloidTTS.py
 ```
 
-产物在 `dist\VocaloidTTS\VocaloidTTS.exe`。用 `--onedir` 是为了避免部分机器上 onefile 解压临时目录失败。也可以直接推 `v*` tag，让 [GitHub Actions](.github/workflows/release.yml) 自动构建、打包并发布 Release。
+产物在 `dist\VocaloidTTS\VocaloidTTS.exe`。用 `--onedir` 是为了避免部分机器上 onefile 解压临时目录失败。
+
+发版走 `release` 分支：平时推 `main` 只跑测试，不构建也不发布；要发版时改好版本号并推到 `main`，再执行
+
+```bat
+git push origin main:release
+```
+
+[GitHub Actions](.github/workflows/release.yml) 会跑测试、构建、冒烟、打包 zip，并按 `vocaloidtts/__init__.py` 的版本号创建 Release。同一版本重推只替换产物，保留手写的发布说明。
 
 ---
 

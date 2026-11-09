@@ -1,8 +1,11 @@
 name: Release
 
+# 平时推 main 不触发发布；要发版时把 main 推到 release 分支：
+#   git push origin main:release
+# workflow_dispatch 只跑构建、不发布，用来验证打包链路。
 on:
   push:
-    tags: ['v*']
+    branches: [release]
   workflow_dispatch:
 
 permissions:
@@ -11,6 +14,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,12 +50,19 @@ jobs:
           }
           Get-Content "$env:TEMP\VocaloidTTS_selftest.ok"
 
-      - name: Package the zip
+      - name: Read the version
+        id: version
         shell: pwsh
         run: |
           $version = (Select-String -Path vocaloidtts\__init__.py -Pattern '__version__').Line.Split('"')[1]
+          "version=$version" | Out-File -Append $env:GITHUB_OUTPUT
+          Write-Output "packaging VocaloidTTS_v$version"
+
+      - name: Package the zip
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
           $name = "VocaloidTTS_v$version"
-          Write-Output "packaging $name"
           New-Item -ItemType Directory -Force dist\pack | Out-Null
           Copy-Item dist\VocaloidTTS "dist\pack\$name" -Recurse
           Copy-Item "README_快速开始.txt" "dist\pack\$name\"
@@ -66,7 +78,7 @@ jobs:
 
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -74,8 +86,32 @@ jobs:
           name: VocaloidTTS-windows
           path: dist
 
+      - name: Check whether this version is already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "v${{ needs.build.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 新版本：建 tag 和 Release，正文用自动生成的 changelog。
       - uses: softprops/action-gh-release@v2
+        if: steps.exists.outputs.exists == 'false'
         with:
+          tag_name: v${{ needs.build.outputs.version }}
+          name: VocaloidTTS ${{ needs.build.outputs.version }}
           files: dist/*.zip
           generate_release_notes: true
           draft: false
+
+      # 同一版本重推 release 分支：只换产物，保留手写的发布说明。
+      - name: Replace the asset on the existing release
+        if: steps.exists.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "v${{ needs.build.outputs.version }}" dist/*.zip --clobber
+          echo "v${{ needs.build.outputs.version }} already released; asset replaced, notes kept."
