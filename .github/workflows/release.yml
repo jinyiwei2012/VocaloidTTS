@@ -36,8 +36,10 @@ jobs:
           $exe = "dist\VocaloidTTS\VocaloidTTS.exe"
           if (-not (Test-Path $exe)) { throw "PyInstaller produced no exe" }
           Remove-Item "$env:TEMP\VocaloidTTS_selftest.ok" -ErrorAction SilentlyContinue
-          & $exe --selftest
-          if ($LASTEXITCODE -ne 0) { throw "selftest exited with $LASTEXITCODE" }
+          # console=False 的 GUI 程序用 & 调用时 PowerShell 不会等待，
+          # $LASTEXITCODE 拿不到真实退出码；必须显式 -Wait。
+          $proc = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "selftest exited with $($proc.ExitCode)" }
           if (-not (Test-Path "$env:TEMP\VocaloidTTS_selftest.ok")) {
             throw "selftest produced no .ok file"
           }
