@@ -376,4 +376,47 @@ mtime + 条目数，而不是逐文件 hash；`find`/`rsync` 的默认增量判�
 最坏情况退化成「每次启动都扫描」。回滚 = 恢复旧的 `_cache_signature` 实现，
 `_dir_state` / `_tree_states` 可以留着不用。
 
+## 2026-11-10 Cadencii `.xvsq` 的两个结构坑
+
+**待定问题**：手写 `.xvsq` 时，`Track` 下面到底要不要先垫一条空轨？`PIT` 这类
+曲线是「写元信息就够」还是「必须铺控制点」？
+
+**背景约束**：没有 Cadencii 可实测，只能以 LibreSVIP 的模型和它自己的读写实现
+为准（`libresvip/plugins/xvsq/`）。
+
+**调研参考**：读 LibreSVIP 的 `cadencii_parser.py` 发现它读唱轨用的是
+`vsq_file.track.vsq_track[1:]`——**第 0 条轨被跳过**；再看
+`cadencii_generator.py`，它写的时候 `vsq_tracks = [VsqTrack()]` 先塞一条空的。
+也就是说「只写一条唱轨」的 `.xvsq` 会被读成「没有唱轨」。`VsqBPList` 的字段名
+也确认是 `Data` + 大写的 `Default` / `Name` / `Maximum` / `Minimum`，不是小写。
+
+**候选方案**
+1. **只写一条唱轨**：文件更短。代价是任何按 VOCALOID2 惯例读的程序（含
+   LibreSVIP）都看不到唱轨。
+2. **空主控轨 + 唱轨**：和 LibreSVIP 的写法一致，多 12 个字节。
+3. **曲线也铺控制点**：把 `controls["P"]` 换算成 `PIT` 的 `Data` 串。
+
+**选择**：方案 2 + 不铺曲线。
+
+**选择理由**：方案 2 是「能不能被读出来」的问题，没有取舍空间。曲线按项目既有
+惯例（`ust.py` 的 docstring 写着「音高编辑有两套算法，写错比不写更糟」）只写
+元信息：Cadencii 的音高编辑同样分 mode1/mode2，没有实测就铺点，错了会让整首歌
+的音高曲线偏移，而留空只是「用户自己去拉」。
+
+**未选原因**
+- 方案 1：会直接导致唱轨丢失，不是简化而是写错。
+- 方案 3：无法实测 mode1/mode2 的语义差异，写错代价高于不写。
+
+**验证方式**：把导出的文件交给 LibreSVIP **自己的** `xsdata_pydantic` 解析器
+（模型 `libresvip.plugins.xvsq.model.VsqFileEx`）解析：解析通过，且
+`PreMeasure=1`、`TotalClocks=3284`、`Tempo=500000`、4/4、2 条轨（第 0 条无
+`MetaText`）、4 个 `Anote` 的 `Clock` / `Note` / `Length` / `Phrase` /
+`PhoneticSymbol` 全部与源工程一致。项目内另有 `tests/test_xvsq.py` 用标准库
+`ElementTree` 当独立读取器做结构回归。
+
+**风险与回滚**：仍未在真实 Cadencii 里打开过；LibreSVIP 的模型是「从真实文件
+反推」的，比自造结构可信，但不等于 Cadencii 官方校验。回滚 = 删掉
+`formats/xvsq.py` 与注册表那一行。
+
+
 

@@ -104,6 +104,7 @@ python VocaloidTTS.py
 | Muta | `.mtp` | 二进制，UTF-16LE 字符串 |
 | DeepVocal | `.dv` | 二进制，`SHARPKEY` 头；音高轴是 `115 - MIDI` |
 | CeVIO | `.ccs` | XML；音符/速度/拍号全是属性不是子元素 |
+| Cadencii | `.xvsq` | XML；第 0 条轨是空的主控轨，唱轨从第 1 条开始 |
 | UTAU | `.ust` | INI 风格文本；只写音符层，音高包络留给编辑器 |
 | OpenSVIP | `.svip` | JSON 交换工程，可继续转换 |
 
