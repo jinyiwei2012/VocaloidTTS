@@ -319,6 +319,25 @@ def parse_meter(num_raw: str, den_raw: str) -> tuple[int, int]:
     return num, den
 
 
+def schema_version(settings: dict) -> int:
+    """读设置文件里的 ``schema``；损坏或非有限值一律当 1（旧版）。
+
+    设置文件是用户可编辑的 JSON，``{"schema": 1e999}`` 是合法 JSON、解析成
+    ``inf``，而 ``int(inf)`` 抛 ``OverflowError``。这个函数在 ``_apply_settings``
+    的最前面被调用，抛出去就等于窗口起不来——所以这里必须兜住所有数字异常。
+    """
+    try:
+        raw = settings.get("schema", 1)
+    except AttributeError:
+        return 1
+    if isinstance(raw, float) and not math.isfinite(raw):
+        return 1
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 1
+
+
 def default_output_dir() -> Path:
     docs = None
     try:
@@ -2480,10 +2499,7 @@ class VocaloidTTSApp(tk.Tk):
         recent = s.get("recent")
         if isinstance(recent, list):
             self.recent = [str(p) for p in recent if isinstance(p, str)][:10]
-        try:
-            schema = int(s.get("schema", 1))
-        except (TypeError, ValueError):
-            schema = 1
+        schema = schema_version(s)
         self._safe_apply("声库", lambda: self._apply_voicebank_setting(s))
         # v1 saved a much flatter tone; start v2 users on the new defaults
         if schema < 2:

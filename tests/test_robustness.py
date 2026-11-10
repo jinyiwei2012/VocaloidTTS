@@ -104,6 +104,21 @@ class ExtremeProjectTests(unittest.TestCase):
         self.assertIsNone(edit.dur_scale)
         self.assertIsNone(edit.pause_ms)
 
+    def test_settings_schema_non_finite_falls_back_to_one(self) -> None:
+        # {"schema": 1e999} 是合法 JSON，解析成 inf；int(inf) 抛 OverflowError，
+        # 而它发生在 _apply_settings 的最前面，兜不住窗口就起不来。
+        from vocaloidtts.app import schema_version
+        self.assertEqual(schema_version(json.loads('{"schema": 1e999}')), 1)
+        self.assertEqual(schema_version({"schema": float("inf")}), 1)
+        self.assertEqual(schema_version({"schema": float("nan")}), 1)
+        self.assertEqual(schema_version({"schema": "abc"}), 1)
+        self.assertEqual(schema_version({"schema": None}), 1)
+        self.assertEqual(schema_version({}), 1)
+        self.assertEqual(schema_version(None), 1)
+        self.assertEqual(schema_version({"schema": 10}), 10)
+        self.assertEqual(schema_version({"schema": "7"}), 7)
+        self.assertEqual(schema_version({"schema": 2.9}), 2)
+
     def test_huge_edit_offsets_do_not_crash(self) -> None:
         edits = EditSet.from_dict({
             "snapshot": "你好",
