@@ -18,10 +18,10 @@ def formats() -> dict[str, Format]:
     """返回 ``key -> Format``，首次调用时构建并缓存。"""
     global _cache
     if _cache is None:
-        from . import (ace, acep, aisp, ass, dspx, lrc, mid, mtp, nn, s5p,
-                       srt, svip, svip3, svp, tlp, tlpx, tsmsln, tssln,
-                       ust, ustx, vfp, vog, vpr, vspx, vsq, vsqx, vxf,
-                       y77)
+        from . import (ace, acep, aisp, ass, dspx, dv, lrc, mid, mtp, nn,
+                       s5p, srt, svip, svip3, svp, tlp, tlpx, tsmsln,
+                       tssln, ust, ustx, vfp, vog, vpr, vspx, vsq, vsqx,
+                       vxf, y77)
 
         _cache = {
             entry.key: entry
@@ -32,8 +32,8 @@ def formats() -> dict[str, Format]:
                           tsmsln.FORMAT,
                           nn.FORMAT, vspx.FORMAT,
                           dspx.FORMAT, vog.FORMAT, vfp.FORMAT, vxf.FORMAT,
-                          mtp.FORMAT, ace.FORMAT, ust.FORMAT, lrc.FORMAT,
-                          srt.FORMAT, ass.FORMAT)
+                          dv.FORMAT, mtp.FORMAT, ace.FORMAT, ust.FORMAT,
+                          lrc.FORMAT, srt.FORMAT, ass.FORMAT)
         }
     return _cache
 
