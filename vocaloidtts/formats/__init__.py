@@ -20,7 +20,7 @@ def formats() -> dict[str, Format]:
     if _cache is None:
         from . import (acep, aisp, ass, dspx, lrc, mid, nn, s5p, srt, svip,
                        svip3, svp, tlp, tlpx, ustx, vfp, vog, vpr, vspx,
-                       vsqx, y77)
+                       vsqx, vxf, y77)
 
         _cache = {
             entry.key: entry
@@ -28,8 +28,8 @@ def formats() -> dict[str, Format]:
                           mid.FORMAT, acep.FORMAT, svip3.FORMAT, ustx.FORMAT,
                           svip.FORMAT, y77.FORMAT, aisp.FORMAT, tlp.FORMAT,
                           tlpx.FORMAT, nn.FORMAT, vspx.FORMAT, dspx.FORMAT,
-                          vog.FORMAT, vfp.FORMAT, lrc.FORMAT, srt.FORMAT,
-                          ass.FORMAT)
+                          vog.FORMAT, vfp.FORMAT, vxf.FORMAT, lrc.FORMAT,
+                          srt.FORMAT, ass.FORMAT)
         }
     return _cache
 
