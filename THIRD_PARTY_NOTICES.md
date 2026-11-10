@@ -17,6 +17,21 @@ MIT 项目，按 MIT 要求保留原版权与许可声明。
 | `formats/s5p.py` | `plugins/s5p/` | `version: 7`、meter/tempo/tracks 结构、blick 换算、`dbDefaults` 默认值 |
 | `formats/acep.py` | `plugins/acep/` | zstd + base64 容器（`version: 1000` 表示未加密）、`version: 9` 的工程结构、音符/patter 字段 |
 | `formats/vpr.py` | `plugins/vpr/` | zip 内 `Project/sequence.json` 的结构、控制器名（含 gender→`character`）、BPM 的 1/100 倍率 |
+| `formats/vsq.py` | `plugins/vsq/` | VSQ 文本段落与 `DM:` 前缀切段方式、音符/歌词句柄结构 |
+| `formats/y77.py` | `plugins/y77/` | 30 tick 时间单位、`88 - MIDI` 的音高轴、500 点音高包络 |
+| `formats/aisp.py` | `plugins/aisp/` | 两行 JSON 的文件结构、15 tick 单位、`MIDI - 12` 的键号、十分之一半音的 `pit` 游程 |
+| `formats/tlp.py` | `plugins/tlp/` | 工程 JSON 结构、绝对音高的扁平 `pitch` 数组 |
+| `formats/tlpx.py` | `plugins/tlpx/` | CBOR 序列化、part 的 `startOffset` / `endOffset` |
+| `formats/nn.py` | `plugins/nn/` | 行文本文法（Tatsu 定义）、`83 - MIDI` 的音高轴、音高包络约定 |
+| `formats/vspx.py` | `plugins/vspx/` | XML 结构、`Resolution` 1920 与 480 tick 的关系、音名写法 |
+| `formats/dspx.py` | `plugins/dspx/` | zstd + JSON 容器、`version: 1.0.0` 的严格字段模型 |
+| `formats/vog.py` | `plugins/vog/` | `chart.json` 结构与 `timeSig0` / `bpm0` / `utts` 字段 |
+| `formats/vfp.py` | `plugins/vfp/` | 键值表 + `*Order` 数组的工程结构、clip 的 32 四分音符分块 |
+| `formats/vxf.py` | `plugins/vxf/` | MIDI 2.0 UMP 包结构、魔术数偏移、12 字节切段约定 |
+| `formats/mtp.py` | `plugins/mtp/` | 二进制布局、`
+` + u32 的数组、`139 - MIDI` 音高轴、UTF-16LE 字符串 |
+| `formats/ace.py` | `plugins/ace/` | 手机版 JSON 结构、秒制时间、`MIDI + 12` 音高字段 |
+| `formats/lrc.py` / `srt.py` / `ass.py` | `plugins/lrc` / `srt` / `ass` | 按停顿切歌词行的时间轴约定 |
 | `formats/__init__.py` | `plugins/` 的组织方式 | 「每个格式一个模块 + 元数据自带」的注册表思路 |
 
 各格式都只移植了**写**方向，并按本项目需要做了简化（单轨、不写参数曲线或只写

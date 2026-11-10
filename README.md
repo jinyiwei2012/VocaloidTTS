@@ -4,7 +4,7 @@
 
 <img src="assets/vocaloidtts.png" width="96" alt="VocaloidTTS icon">
 
-> 把文字变成歌姬的「说话声」：自动生成音符、拼音歌词、PIT 音高曲线与 DYN/BRI/CLE/OPE 表情参数，输出 VOCALOID4/5 的 `.vsqx`，也可导出 VOCALOID 5/6 `.vpr`、Synthesizer V `.svp` / `.s5p`、ACE Studio `.acep`、X Studio 3 `.svip3`、OpenUTAU `.ustx`、OpenSVIP `.svip` 与标准 MIDI `.mid`；附带可选的 V4 Job Plugin。
+> 把文字变成歌姬的「说话声」：自动生成音符、拼音歌词、PIT 音高曲线与 DYN/BRI/CLE/OPE 表情参数，输出 VOCALOID4/5 的 `.vsqx`，也可导出 VOCALOID 5/6、VOCALOID2、Synthesizer V、ACE Studio、X Studio 3、OpenUTAU、TuneLab、袅袅、VocalSharp、DiffScope 等二十多种工程，以及标准 MIDI 与 LRC/SRT/ASS 时间轴歌词；附带可选的 V4 Job Plugin。
 
 **最新版本**：`v1.2.1` — 下载与每版说明见 [GitHub Releases](https://github.com/jinyiwei2012/VocaloidTTS/releases)。
 
@@ -69,25 +69,57 @@ python VocaloidTTS.py
 
 ## 导出格式
 
-九种格式共用同一份 `Song` 数据（音符、PIT、DYN、BRE、GEN），不需要重复调参。
+二十多种格式共用同一份 `Song` 数据（音符、PIT、DYN、BRE、GEN），不需要重复调参。
+加格式只需要在 `vocaloidtts/formats/` 下加一个模块并在注册表里加一行，
+「生成工程 ▼」菜单会自动列出来。
+
+### VOCALOID 系
 
 | 格式 | 扩展名 | 说明 |
 |---|---|---|
 | VOCALOID VSQX | `.vsqx` | V4/V5 原生工程；歌词写**拼音**（VOCALOID 的中文歌词栏按拼音解析） |
-| VOCALOID 5/6 工程 | `.vpr` | V5/V6 原生工程；zip 包，歌词写汉字、音素写 X-SAMPA |
+| VOCALOID 5/6 | `.vpr` | V5/V6 原生工程；zip 包，歌词写汉字、音素写 X-SAMPA |
+| VOCALOID2 | `.vsq` | V2 序列；MIDI 文件里装 INI 风格文本，歌词写拼音 |
+
+### 歌声合成编辑器
+
+| 格式 | 扩展名 | 说明 |
+|---|---|---|
 | Synthesizer V 2 | `.s5p` | SynthV Studio 2 工程 |
 | Synthesizer V（旧） | `.svp` | SynthV Studio 1 工程；歌词写汉字，发音交给编辑器生成 |
-| 标准 MIDI | `.mid` | 单轨 SMF，任何 DAW 都能读；只带音符、歌词、速度、拍号 |
-| ACE Studio | `.acep` | ACE Studio 工程；zstd 容器，歌词写汉字，参数曲线交给 ACE 自己算 |
-| X Studio 3 | `.svip3` | 网易云 X Studio 3 工程；protobuf 手写，无额外依赖 |
+| ACE Studio | `.acep` | zstd 压缩容器；参数曲线交给 ACE 自己算 |
+| ACE Virtual Singer | `.ace` | 手机版工程；时间用秒，`pitch` 是 MIDI + 12 |
+| X Studio 3 | `.svip3` | 网易云 X Studio 3 工程；protobuf 手写 |
 | OpenUTAU | `.ustx` | OpenUTAU 0.10 YAML 工程 |
+| Yuan77 | `.y77` | 音符内嵌 500 点音高曲线；音高轴是 `88 - MIDI` |
+| AISingers | `.aisp` | 「一行 JSON 头 + 一行 JSON 体」 |
+| TuneLab（旧 / 新） | `.tlp` / `.tlpx` | 结构相同，`.tlpx` 用 CBOR |
+| 袅袅虚拟歌手 | `.nn` | 纯文本按行排，音高包络 100 点 |
+| VocalSharp | `.vspx` | XML 工程 |
+| DiffScope | `.dspx` | zstd 压缩的 JSON |
+| Vogen | `.vog` | zip 包里的 `chart.json` |
+| VOX Factory | `.vfp` | 键值表 + order 数组的 JSON |
+| VX-β | `.vxf` | MIDI 2.0 UMP 二进制流 |
+| Muta | `.mtp` | 二进制，UTF-16LE 字符串 |
 | OpenSVIP | `.svip` | JSON 交换工程，可继续转换 |
 
-- **VOCALOID VSQX / VPR**：需要先选一个本机声库。导出时会把它的 compID 写进工程，compID 不是 16 位会直接报错——VOCALOID 遇到不认识的声库不报错，只会静默回退到默认歌手。
-- **ACE Studio**：`.acep` 是 zstd 压缩容器；音高/表情曲线留空，由 ACE 按音符自己算；默认歌手是「然糊糊」，打开后请改选。
+### 通用与歌词
+
+| 格式 | 扩展名 | 说明 |
+|---|---|---|
+| 标准 MIDI | `.mid` | 单轨 SMF，任何 DAW 都能读；只带音符、歌词、速度、拍号 |
+| LRC / SRT / ASS | `.lrc` / `.srt` / `.ass` | 按停顿切句的时间轴歌词与字幕 |
+
+### 各格式的注意事项
+
+- **VOCALOID VSQX / VPR / VSQ**：需要先选一个本机声库。VSQX 和 VPR 会把 compID 写进工程，compID 不是 16 位会直接报错——VOCALOID 遇到不认识的声库不报错，只会静默回退到默认歌手。
+- **ACE Studio / ACE Virtual Singer**：默认歌手是占位值，打开后请改选本机声库。
 - **X Studio 3**：没有公开的洛天依 UUID，临时借用内置女声「陈水若」的 ID，轨道名仍写「洛天依」；打开后请改选本机歌手。
-- **OpenUTAU**：只写占位歌手，不绑定真实声库；打开后请选择本机声库/渲染器。
+- **OpenUTAU / VocalSharp / Muta**：只写占位歌手，不绑定真实声库。
 - **OpenSVIP**：实验性 JSON 导出。
+
+> 这些格式的**容器和结构**都有回归测试覆盖（每种的测试都自带独立写的读取器），
+> 但除了 VSQX 之外，都还没有在对应编辑器里逐一实测过。遇到打不开请开 issue。
 
 ---
 
@@ -101,7 +133,7 @@ python VocaloidTTS.py
 
 ## 工作原理
 
-文本 → 切分音节 / 转拼音与 X-SAMPA 音素 → 按四声 + 句调 + 停顿 + 重音生成语音音高曲线 → 写成 `PIT`/`PBS` 控制点与 `DYN/BRI/CLE/OPE/BRE/GEN/POR` 表情参数 → 输出 `.vsqx`、`.vpr`、`.s5p`、`.acep` 等九种格式。
+文本 → 切分音节 / 转拼音与 X-SAMPA 音素 → 按四声 + 句调 + 停顿 + 重音生成语音音高曲线 → 写成 `PIT`/`PBS` 控制点与 `DYN/BRI/CLE/OPE/BRE/GEN/POR` 表情参数 → 输出 `.vsqx`、`.vpr`、`.s5p`、`.acep` 等二十多种格式。
 
 模型是**规则驱动**的（不是神经网络 TTS）：可控、可解释、离线、生成快。每个音节的音符落在自己的声调基准（G3/F#3/E3/F3），PIT 只负责该声调内部的升降，所以 V4/V5 钢琴卷帘里能看到四声的高度差，又不会在音符边界产生多余滑音。细节与参数说明见 [PLAN.md](PLAN.md)、[docs/improvements.md](docs/improvements.md) 与 `vocaloidtts/` 源码。
 
