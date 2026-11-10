@@ -338,6 +338,26 @@ def schema_version(settings: dict) -> int:
         return 1
 
 
+def sanitize_dictionary(raw: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """丢掉读音无效的词条，返回 ``(干净词典, 被丢掉的词)``。
+
+    词条是用户手输的，也可能来自手改过的 ``userdict.json``。``parse_reading``
+    只校验「字母 + 声调数字」的形状，``zz1`` 这种形状合法但拼音不存在的读音会
+    一路进到音素转换：未知韵母回退成近似音（``zz`` → ``ts a``），唱出来是错的
+    而且不报错。所以这里再用 ``is_valid_pinyin`` 过一遍。
+    """
+    clean: dict[str, str] = {}
+    dropped: list[str] = []
+    for word, reading in raw.items():
+        parsed = parse_reading(reading)
+        if (parsed is None or len(parsed) != len(word)
+                or not all(is_valid_pinyin(py) for py, _ in parsed)):
+            dropped.append(word)
+            continue
+        clean[word] = reading
+    return clean, dropped
+
+
 def default_output_dir() -> Path:
     docs = None
     try:
@@ -430,7 +450,8 @@ class VocaloidTTSApp(tk.Tk):
         self._loading = False
         self.settings = self._load_settings()
         self.edits = EditSet()
-        self.dictionary = load_userdict(appdata_dir() / "userdict.json")
+        self.dictionary, self._dropped_words = sanitize_dictionary(
+            load_userdict(appdata_dir() / "userdict.json"))
         self.project_path: str | None = None
         self._autosave_job = None
         self._previewing = False
@@ -441,6 +462,11 @@ class VocaloidTTSApp(tk.Tk):
         self._build()
         self._apply_settings()
         self._log("VocaloidTTS 已就绪。输入文字后点“生成工程”，选择要导出的格式。")
+        if self._dropped_words:
+            shown = "、".join(self._dropped_words[:5])
+            more = "" if len(self._dropped_words) <= 5 else " 等"
+            self._log(f"用户词典里有 {len(self._dropped_words)} 条读音无效，已忽略："
+                      f"{shown}{more}")
         custom_roots = get_voicebank_roots()
         if custom_roots:
             self._log("自定义声库目录：" + "；".join(r.path for r in custom_roots))
@@ -1602,6 +1628,15 @@ class VocaloidTTSApp(tk.Tk):
                 messagebox.showerror(
                     "格式不对",
                     "每个字都要有一个带声调数字的拼音，数量也要对得上。",
+                    parent=win)
+                return
+            invalid = [f"{py}{tone}" for py, tone in parsed
+                       if not is_valid_pinyin(py)]
+            if invalid:
+                messagebox.showerror(
+                    "读音无效",
+                    "这些不是有效的拼音音节：" + "、".join(invalid)
+                    + "\n\n请写声母韵母齐全的拼音，例如 chong2、ming2。",
                     parent=win)
                 return
             self.dictionary[word] = " ".join(f"{py}{tone}"

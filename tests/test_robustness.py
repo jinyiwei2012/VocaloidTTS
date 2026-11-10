@@ -119,6 +119,26 @@ class ExtremeProjectTests(unittest.TestCase):
         self.assertEqual(schema_version({"schema": "7"}), 7)
         self.assertEqual(schema_version({"schema": 2.9}), 2)
 
+    def test_dictionary_drops_invalid_pinyin(self) -> None:
+        # zz1 形状合法（字母 + 声调数字），但不是存在的拼音；留着会唱成
+        # 近似音 ts a，而且不会有任何提示。
+        from vocaloidtts.app import sanitize_dictionary
+        clean, dropped = sanitize_dictionary({
+            "重明": "chong2 ming2",
+            "你好": "ni3 hao3",
+            "怪词": "zz1",
+            "音节不够": "ni3",
+            "空": "",
+        })
+        self.assertEqual(clean, {"重明": "chong2 ming2", "你好": "ni3 hao3"})
+        self.assertEqual(sorted(dropped), sorted(["怪词", "音节不够", "空"]))
+
+    def test_invalid_pinyin_really_reaches_the_phoneme_table(self) -> None:
+        from vocaloidtts.pinyin import is_valid_pinyin, pinyin_to_phonemes
+        self.assertFalse(is_valid_pinyin("zz"))
+        # 未知韵母回退到近似音，不报错——这就是必须在入口拦住的原因
+        self.assertEqual(pinyin_to_phonemes("zz"), "ts a")
+
     def test_huge_edit_offsets_do_not_crash(self) -> None:
         edits = EditSet.from_dict({
             "snapshot": "你好",
