@@ -13,9 +13,9 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_bytes
 from ..prosody import Song
-from .base import Format, lyric_for
+from .base import Format, lyric_for, resample
 
-#: 与内部 tick 一致：480 tick = 1 个四分音符。
+#: MIDI 的固定时基：480 tick = 1 个四分音符。
 DIVISION = 480
 
 
@@ -44,6 +44,7 @@ def _lyric_text(note) -> str:
 
 
 def write_mid(song: Song, path: str) -> Path:
+    song = resample(song)
     if not song.notes:
         raise ValueError("没有可导出的音符")
 

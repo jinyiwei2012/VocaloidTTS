@@ -8,7 +8,7 @@ from .. import __version__
 from ..atomicio import atomic_write_text
 from ..prosody import Note, Song
 from .base import (Format, PitchIndex, curve_values, db_value, lyric_for,
-                   pit_cents, pronunciation_for)
+                   pit_cents, pronunciation_for, resample)
 
 OPENUTAU_SINGER = "洛天依"
 OPENUTAU_PHONEMIZER = "OpenUtau.Core.DefaultPhonemizer"
@@ -59,6 +59,7 @@ def write_ustx(song: Song, path: str) -> str:
     milliseconds after the note and 0.1-semitone units, matching
     OpenUtau.Core.Ustx.PitchPoint.
     """
+    song = resample(song)
     if not song.notes:
         raise ValueError("没有可导出的音符")
     end = max(n.start + n.dur for n in song.notes)

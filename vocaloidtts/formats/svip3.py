@@ -7,7 +7,7 @@ from pathlib import Path
 from ..atomicio import atomic_write_bytes
 from ..prosody import Note, Song
 from .base import (Format, PitchIndex, curve_values, lyric_for, pit_cents,
-                   pronunciation_for)
+                   pronunciation_for, resample)
 
 XSTUDIO_LUOTIANYI_ID = "c5ed53a0-9d84-4fa7-bef5-e99087b046f0"  # 陈水若 (temporary)
 XSTUDIO_LUOTIANYI_NAME = "洛天依"
@@ -102,6 +102,7 @@ def _xs3_pitch_points(song: Song, numerator: int = 4, denominator: int = 4) -> l
 
 def write_svip3(song: Song, path: str, singer_id: str = XSTUDIO_LUOTIANYI_ID) -> str:
     """Write a minimal X Studio 3 protobuf project."""
+    song = resample(song)
     if not song.notes:
         raise ValueError("没有可导出的音符")
 

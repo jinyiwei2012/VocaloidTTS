@@ -34,7 +34,7 @@ from pathlib import Path
 from ..atomicio import atomic_write_bytes
 from ..prosody import Song
 from . import juce
-from .base import Format, lyric_for
+from .base import Format, lyric_for, resample
 
 #: 一个 tick 对应多少个 clock。
 CLOCK_PER_TICK = 2
@@ -92,6 +92,7 @@ def _state_information(song: Song, version: str = APP_VERSION) -> bytes:
 def build_file(song: Song, title: str = "VocaloidTTS", *,
                root_name: str = "TSSolution", version: str = APP_VERSION,
                nested_track: bool = True, with_shell: bool = True) -> bytes:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

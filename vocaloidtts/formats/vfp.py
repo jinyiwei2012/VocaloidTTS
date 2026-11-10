@@ -25,7 +25,7 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_bytes
 from ..prosody import Song
-from .base import Format, lyric_for, seconds
+from .base import Format, lyric_for, seconds, resample
 
 #: 工程版本号。
 PROJECT_VERSION = "0.12.0"
@@ -69,6 +69,7 @@ def _note(note, song: Song) -> dict:
 
 
 def build_project(song: Song, title: str = "VocaloidTTS") -> dict:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_text
 from ..prosody import Song
-from .base import Format, PitchIndex, lyric_for, pit_cents
+from .base import Format, PitchIndex, lyric_for, pit_cents, resample
 
 #: 1 tick（480/四分音符）对应的 blick 数。
 BLICK_PER_TICK = 1_470_000
@@ -46,6 +46,7 @@ def _pitch_points(song: Song, index: PitchIndex) -> list[float]:
 
 def write_svp(song: Song, path: str) -> Path:
     """把 Song 写成 Synthesizer V Studio 2 的 .svp。"""
+    song = resample(song)
     if not song.notes:
         raise ValueError("没有可导出的音符")
 

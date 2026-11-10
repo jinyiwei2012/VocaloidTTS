@@ -19,10 +19,10 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_bytes
 from ..prosody import Song
-from .base import Format, cbor_dumps, lyric_for
+from .base import Format, cbor_dumps, lyric_for, resample
 from .tlp import pitch_curve
 
-#: TuneLab 的时间单位和内部 tick 一致。
+#: TuneLab 的固定时基：480 tick = 一个四分音符。
 TICKS_PER_QUARTER = 480
 
 #: 导出设置的默认值（跟 LibreSVIP 写出来的一致）。
@@ -37,6 +37,7 @@ EXPORT_CONFIG = {
 
 
 def build_project(song: Song) -> dict:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

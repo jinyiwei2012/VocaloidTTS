@@ -16,8 +16,8 @@
     ...
     [#TRACKEND]
 
-``[#nnnn]`` 是每个音符的小节名，``Length`` 用 480 tick / 四分音符（和我们的
-内部 tick 一致，不需要换算），``NoteNum`` 是 MIDI 音符号。
+``[#nnnn]`` 是每个音符的小节名，``Length`` 用 480 tick / 四分音符（内部 tick
+由 :func:`vocaloidtts.formats.base.resample` 换算到 480），``NoteNum`` 是 MIDI 音符号。
 
 UST 是**顺序**格式：它只写每个音符的 ``Length``，不写 ``start``。所以音符之间
 的停顿必须显式写成 ``Lyric=R`` 的休止音符，否则整首歌会被压缩成连唱——标点带来
@@ -40,7 +40,7 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_text
 from ..prosody import Song
-from .base import Format, lyric_for
+from .base import Format, lyric_for, resample
 
 #: UST 的时间单位：480 tick = 一个四分音符。
 TICKS_PER_QUARTER = 480
@@ -77,6 +77,7 @@ def _entries(notes) -> list[tuple[int, str, int]]:
 
 
 def build_text(song: Song, title: str = "VocaloidTTS") -> str:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

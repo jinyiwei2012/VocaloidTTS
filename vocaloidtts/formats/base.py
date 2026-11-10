@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import struct
 from typing import TYPE_CHECKING, Callable, Iterable
@@ -217,6 +217,45 @@ def seconds(song: Song, tick: float) -> float:
     resolution = int(getattr(song, "resolution", 480) or 480)
     bpm = max(1.0, float(song.bpm))
     return float(tick) * 60.0 / (bpm * resolution)
+
+
+#: 绝大多数工程格式假定的固定时基：480 tick = 一个四分音符。
+TARGET_TICKS_PER_QUARTER = 480
+
+
+def resample(song: Song, per_quarter: int = TARGET_TICKS_PER_QUARTER) -> Song:
+    """把 Song 的时间轴换算到目标时基（默认 480 tick / 四分音符）。
+
+    ``compose(resolution=...)`` 允许内部 tick 用 96..1920 之间的别的分辨率。
+    凡是「文件里不写分辨率、位置一律按固定 480 tick 解释」的格式，写之前都要
+    过这一层——否则 ``resolution=960`` 导出的时间轴会整体翻倍，而且像 VFP 这种
+    同时写 tick 和秒的格式，两套字段会互相矛盾。
+
+    ``seconds()`` 也读 ``Song.resolution``，所以这里连 resolution 一起改成目标
+    值，保证 tick 与秒两种字段自洽。``duration_s`` 本来就是秒，不换算。
+
+    已经是目标分辨率时原样返回，不做任何拷贝——正常路径零开销。
+    """
+    source = int(getattr(song, "resolution", per_quarter) or per_quarter)
+    if source == per_quarter:
+        return song
+    ratio = per_quarter / source
+
+    def scale(value: float) -> int:
+        return int(round(value * ratio))
+
+    return replace(
+        song,
+        notes=[replace(note,
+                       start=scale(note.start),
+                       dur=max(1, scale(note.dur)))
+               for note in song.notes],
+        controls={name: [(scale(t), value) for t, value in points]
+                  for name, points in song.controls.items()},
+        total_ticks=scale(song.total_ticks),
+        part_start=scale(song.part_start),
+        resolution=per_quarter,
+    )
 
 
 #: 切歌词行时认定的「停顿」长度：1/8 个四分音符。

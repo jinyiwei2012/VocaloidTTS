@@ -30,7 +30,7 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_text
 from ..prosody import Song
-from .base import Format, lyric_for, pitch_samples
+from .base import Format, lyric_for, pitch_samples, resample
 
 #: 版本 19 的时间单位：60 tick = 1 个单位。
 TICKS_PER_UNIT = 60
@@ -65,6 +65,7 @@ def _pitch(note, song: Song) -> tuple[list[int], int]:
 
 
 def build_text(song: Song) -> str:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

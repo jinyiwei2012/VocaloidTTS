@@ -29,7 +29,7 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_bytes
 from ..prosody import Song
-from .base import Format, pitch_samples, seconds
+from .base import Format, pitch_samples, seconds, resample
 
 #: 文件里的 tick 分辨率（每四分音符）。
 TICKS_PER_BEAT = 480
@@ -154,6 +154,7 @@ def _pitch_metadata(song: Song) -> str:
 
 
 def build_file(song: Song, title: str = "VocaloidTTS") -> bytes:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

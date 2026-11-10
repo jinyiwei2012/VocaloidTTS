@@ -8,7 +8,7 @@ from typing import Iterable
 from ..atomicio import atomic_write_text
 from ..prosody import Note, Song
 from .base import (Format, PitchIndex, curve_values, db_value, lyric_for,
-                   pit_cents, pronunciation_for)
+                   pit_cents, pronunciation_for, resample)
 
 def _svip_note(n: Note) -> dict:
     return {
@@ -38,6 +38,7 @@ def write_svip(song: Song, path: str) -> str:
     Project/SingingTrack model (camelCase properties) and is intentionally
     self-describing so it can also be inspected in any text editor.
     """
+    song = resample(song)
     if not song.notes:
         raise ValueError("没有可导出的音符")
     end = max(n.start + n.dur for n in song.notes)

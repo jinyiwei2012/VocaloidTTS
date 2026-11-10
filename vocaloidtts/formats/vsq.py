@@ -27,10 +27,10 @@ from pathlib import Path
 from ..atomicio import atomic_write_bytes
 from ..prosody import Song
 from ..voicebank import Voicebank
-from .base import Format, lyric_for
+from .base import Format, lyric_for, resample
 from .mid import chunk, meta_event, vlq
 
-#: 和内部 tick 一致。
+#: VSQ 的固定时基：480 tick = 一个四分音符。
 TICKS_PER_QUARTER = 480
 
 #: 前导小节数。
@@ -108,6 +108,7 @@ def _curve_sections(song: Song) -> list[str]:
 
 
 def build_text(song: Song, voicebank: Voicebank, title: str = "VocaloidTTS") -> str:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

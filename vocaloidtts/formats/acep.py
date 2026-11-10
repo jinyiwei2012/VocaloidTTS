@@ -20,7 +20,7 @@ THIRD_PARTY_NOTICES.md），这里只保留**写**方向，并做了四处简化
 歌词写**汉字**，这一点和其他几种格式相反：ACE 的中文歌词栏本来就收汉字，
 发音由编辑器自己查表，写拼音它反而认不出。
 
-时间单位：ACE 的 tick 固定 480 / 四分音符，和我们的内部 tick 一致；只有当
+时间单位：ACE 的 tick 固定 480 / 四分音符；只有当
 ``song.resolution`` 不是 480 时才需要按比例换算。
 """
 from __future__ import annotations

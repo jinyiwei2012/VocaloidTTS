@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 
 from ..atomicio import atomic_write_text
 from ..prosody import Song
-from .base import Format, lyric_for
+from .base import Format, lyric_for, resample
 
 #: 写进 <Resolution> 的值：一个 4/4 小节的 tick 数。
 RESOLUTION = 1920
@@ -65,6 +65,7 @@ def _note_xml(note) -> str:
 
 
 def build_xml(song: Song, title: str = "VocaloidTTS") -> str:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

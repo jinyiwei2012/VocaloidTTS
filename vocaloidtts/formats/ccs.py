@@ -36,7 +36,7 @@ from xml.sax.saxutils import quoteattr
 
 from ..atomicio import atomic_write_text
 from ..prosody import Song
-from .base import Format, lyric_for, seconds
+from .base import Format, lyric_for, seconds, resample
 
 #: 一个 tick 对应多少个 clock。
 CLOCK_PER_TICK = 2
@@ -87,6 +87,7 @@ def _note_xml(note) -> str:
 
 
 def build_xml(song: Song, title: str = "VocaloidTTS") -> str:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

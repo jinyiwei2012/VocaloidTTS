@@ -6,7 +6,7 @@ THIRD_PARTY_NOTICES.md）。这里只保留**写**方向，做了两处简化：
 - 只写单轨、单一速度、不写音频轨；
 - ``automations`` / ``vibratos`` 留空，让编辑器用默认值。
 
-时间单位和我们一样是 480 tick / 四分音符，不需要换算。
+时间单位是 480 tick / 四分音符；内部 tick 由 ``base.resample`` 换算过来。
 
 音高曲线（``pitch``）是**绝对音高**（半音），不是相对偏移：每个段是一串
 ``[pos1, value1, pos2, value2, ...]``。我们的 PIT 是相对音符的，所以要加上
@@ -20,9 +20,9 @@ from pathlib import Path
 
 from ..atomicio import atomic_write_text
 from ..prosody import Song
-from .base import Format, lyric_for, pit_cents
+from .base import Format, lyric_for, pit_cents, resample
 
-#: TuneLab 的时间单位和内部 tick 一致。
+#: TuneLab 的固定时基：480 tick = 一个四分音符。
 TICKS_PER_QUARTER = 480
 
 
@@ -43,6 +43,7 @@ def pitch_curve(song: Song) -> list[list[float]]:
 
 
 def build_project(song: Song) -> dict:
+    song = resample(song)
     notes = [note for note in song.notes if note.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")

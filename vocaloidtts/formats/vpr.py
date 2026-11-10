@@ -19,7 +19,7 @@ THIRD_PARTY_NOTICES.md），这里只保留**写**方向，并做了四处简化
 ``lyric`` 本来就是汉字。音素直接取 ``Note.phonemes``（``pinyin.py`` 生成的
 VOCALOID X-SAMPA），和 VSQX 的 ``<p>`` 是同一套符号，不需要退化成 ``l a``。
 
-时间单位：tick，480 / 四分音符，和内部 tick 一致；BPM 以 1/100 为单位存
+时间单位：tick，480 / 四分音符（内部 tick 由 ``base.resample`` 换算）；BPM 以 1/100 为单位存
 （120 BPM -> 12000）。
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ from ..atomicio import atomic_write_bytes
 from ..pinyin import pinyin_to_phonemes
 from ..prosody import Song
 from ..voicebank import Voicebank
-from .base import Format, comp_id, lyric_for
+from .base import Format, comp_id, lyric_for, resample
 
 #: 简体中文的 langID。VOCALOID 的枚举：0 日 / 1 英 / 2 韩 / 3 西 / 4 简中。
 LANG_SIMPLIFIED_CHINESE = 4
@@ -108,6 +108,7 @@ def _controllers(song: Song) -> list[dict]:
 def build_project(song: Song, voicebank: Voicebank,
                   title: str = "VocaloidTTS") -> dict:
     """把 Song 转成 sequence.json 的字典。"""
+    song = resample(song)
     notes = [n for n in song.notes if n.dur > 0]
     if not notes:
         raise ValueError("没有可导出的音符")
