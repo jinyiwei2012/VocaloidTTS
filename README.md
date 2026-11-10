@@ -94,6 +94,7 @@ python VocaloidTTS.py
 | Yuan77 | `.y77` | 音符内嵌 500 点音高曲线；音高轴是 `88 - MIDI` |
 | AISingers | `.aisp` | 「一行 JSON 头 + 一行 JSON 体」 |
 | TuneLab（旧 / 新） | `.tlp` / `.tlpx` | 结构相同，`.tlpx` 用 CBOR |
+| VoiSona（桌面 / 手机） | `.tssln` / `.tsmsln` | JUCE ValueTree 二进制；clock 是 tick 的两倍，音高拆成八度 + 音级 |
 | 袅袅虚拟歌手 | `.nn` | 纯文本按行排，音高包络 100 点 |
 | VocalSharp | `.vspx` | XML 工程 |
 | DiffScope | `.dspx` | zstd 压缩的 JSON |
@@ -101,6 +102,8 @@ python VocaloidTTS.py
 | VOX Factory | `.vfp` | 键值表 + order 数组的 JSON |
 | VX-β | `.vxf` | MIDI 2.0 UMP 二进制流 |
 | Muta | `.mtp` | 二进制，UTF-16LE 字符串 |
+| DeepVocal | `.dv` | 二进制，`SHARPKEY` 头；音高轴是 `115 - MIDI` |
+| UTAU | `.ust` | INI 风格文本；只写音符层，音高包络留给编辑器 |
 | OpenSVIP | `.svip` | JSON 交换工程，可继续转换 |
 
 ### 通用与歌词

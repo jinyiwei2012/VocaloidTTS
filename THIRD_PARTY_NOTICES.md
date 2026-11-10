@@ -31,6 +31,11 @@ MIT 项目，按 MIT 要求保留原版权与许可声明。
 | `formats/mtp.py` | `plugins/mtp/` | 二进制布局、`
 ` + u32 的数组、`139 - MIDI` 音高轴、UTF-16LE 字符串 |
 | `formats/ace.py` | `plugins/ace/` | 手机版 JSON 结构、秒制时间、`MIDI + 12` 音高字段 |
+| `formats/juce.py` | `utils/binary/value_tree.py` | JUCE ValueTree 二进制：压缩整数、类型标签、递归节点 |
+| `formats/tssln.py` | `plugins/tssln/` | `TSSolution` 树结构、clock 双倍、`PitchOctave` / `PitchStep` 拆法 |
+| `formats/tsmsln.py` | `plugins/tsmsln/` | `MobileSongEditor` 根节点、版本号、轨道层级差异 |
+| `formats/dv.py` | `plugins/dv/` | `SHARPKEY` 头、两种数组写法、`115 - MIDI` 音高轴、UTF-16 无关的 u32 长度字符串 |
+| `formats/ust.py` | `plugins/ust/` | `[#VERSION]` / `[#SETTING]` / `[#nnnn]` 段落与字段名 |
 | `formats/lrc.py` / `srt.py` / `ass.py` | `plugins/lrc` / `srt` / `ass` | 按停顿切歌词行的时间轴约定 |
 | `formats/__init__.py` | `plugins/` 的组织方式 | 「每个格式一个模块 + 元数据自带」的注册表思路 |
 
