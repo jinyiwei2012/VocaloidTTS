@@ -32,7 +32,7 @@ class FormatRegistryTests(unittest.TestCase):
 
     def test_vocaloid_formats_need_a_voicebank(self) -> None:
         needs = {key for key, meta in formats().items() if meta.needs_voicebank}
-        self.assertEqual(needs, {"vsqx", "vpr"})
+        self.assertEqual(needs, {"vsqx", "vsq", "vpr"})
 
     def test_missing_voicebank_is_reported_before_writing(self) -> None:
         meta = formats()["vsqx"]

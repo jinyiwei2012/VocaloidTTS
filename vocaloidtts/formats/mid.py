@@ -19,7 +19,7 @@ from .base import Format, lyric_for
 DIVISION = 480
 
 
-def _vlq(value: int) -> bytes:
+def vlq(value: int) -> bytes:
     """MIDI 的可变长度量（variable-length quantity）。"""
     value = max(0, int(value))
     out = [value & 0x7F]
@@ -30,11 +30,11 @@ def _vlq(value: int) -> bytes:
     return bytes(reversed(out))
 
 
-def _meta(kind: int, payload: bytes) -> bytes:
-    return b"\xff" + bytes([kind]) + _vlq(len(payload)) + payload
+def meta_event(kind: int, payload: bytes) -> bytes:
+    return b"\xff" + bytes([kind]) + vlq(len(payload)) + payload
 
 
-def _chunk(tag: bytes, body: bytes) -> bytes:
+def chunk(tag: bytes, body: bytes) -> bytes:
     return tag + len(body).to_bytes(4, "big") + body
 
 
@@ -58,15 +58,15 @@ def write_mid(song: Song, path: str) -> Path:
     # (绝对 tick, 同一 tick 内的顺序, 事件字节)
     # 顺序：note-off 先于 meta，meta 先于 note-on，避免同 tick 的音被截断。
     raw: list[tuple[int, int, bytes]] = [
-        (0, 1, _meta(0x51, micros.to_bytes(3, "big"))),
-        (0, 1, _meta(0x58, bytes([numerator, den_pow, 24, 8]))),
-        (0, 1, _meta(0x03, "VocaloidTTS".encode("utf-8"))),
+        (0, 1, meta_event(0x51, micros.to_bytes(3, "big"))),
+        (0, 1, meta_event(0x58, bytes([numerator, den_pow, 24, 8]))),
+        (0, 1, meta_event(0x03, "VocaloidTTS".encode("utf-8"))),
     ]
     for note in song.notes:
         start = max(0, int(note.start))
         end = start + max(1, int(note.dur))
         text = _lyric_text(note).encode("ascii", "replace")
-        raw.append((start, 1, _meta(0x05, text)))
+        raw.append((start, 1, meta_event(0x05, text)))
         raw.append((start, 2, bytes([0x90, max(0, min(127, int(note.midi))),
                                      max(1, min(127, int(note.velocity)))])))
         raw.append((end, 0, bytes([0x80, max(0, min(127, int(note.midi))), 0])))
@@ -75,13 +75,13 @@ def write_mid(song: Song, path: str) -> Path:
     body = bytearray()
     last = 0
     for tick, _order, data in raw:
-        body += _vlq(tick - last)
+        body += vlq(tick - last)
         body += data
         last = tick
-    body += _vlq(0) + _meta(0x2F, b"")
+    body += vlq(0) + meta_event(0x2F, b"")
 
-    data = _chunk(b"MThd", (0).to_bytes(2, "big") + (1).to_bytes(2, "big")
-                  + DIVISION.to_bytes(2, "big")) + _chunk(b"MTrk", bytes(body))
+    data = chunk(b"MThd", (0).to_bytes(2, "big") + (1).to_bytes(2, "big")
+                  + DIVISION.to_bytes(2, "big")) + chunk(b"MTrk", bytes(body))
     target = Path(path).with_suffix(".mid")
     atomic_write_bytes(target, data)
     return target
