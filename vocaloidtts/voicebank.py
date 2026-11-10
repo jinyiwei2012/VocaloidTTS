@@ -748,26 +748,68 @@ def _cache_path() -> Path:
     return appdata_dir() / "voicebank_cache.json"
 
 
+def _dir_state(directory: Path) -> tuple[str, list[Path]]:
+    """一个目录的状态串 + 它的直接子目录。
+
+    目录的 mtime 随子项增删变化，但 Windows 的 mtime 只跟着系统时钟 tick
+    （约 15 ms）走，同一 tick 内新建子目录时 mtime 可能不变，所以再带上直接
+    条目数。两者合起来能覆盖「嵌套组件目录里新增/移除声库文件」这种情况。
+    """
+    try:
+        stat = directory.stat()
+    except OSError:
+        return f"{directory}|missing", []
+    try:
+        with os.scandir(directory) as entries:
+            items = list(entries)
+    except OSError:
+        return f"{directory}|{stat.st_mtime_ns}|{stat.st_size}|-1", []
+    subdirs: list[Path] = []
+    for entry in items:
+        try:
+            if entry.is_dir():
+                subdirs.append(Path(entry.path))
+        except OSError:
+            continue
+    return f"{directory}|{stat.st_mtime_ns}|{stat.st_size}|{len(items)}", subdirs
+
+
+def _tree_states(root: Path, max_depth: int) -> list[str]:
+    """根目录及其后代的目录状态。
+
+    只 stat 目录、不读声库文件，比真正扫描便宜得多；但能感知后代目录里子项的
+    增删。原来的签名只看根目录一层，所以往已经存在的组件目录里塞一个新声库
+    时签名不变，缓存会一直返回旧列表。
+    """
+    states: list[str] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        state, subdirs = _dir_state(current)
+        states.append(state)
+        if depth < max_depth:
+            stack.extend((sub, depth + 1) for sub in sorted(subdirs))
+    return states
+
+
 def _cache_signature(cfg: dict) -> str:
-    parts = [json.dumps(cfg.get("scan") or {}, sort_keys=True)]
+    scan = cfg.get("scan") or {}
+    try:
+        max_depth = max(1, min(12, int(scan.get("max_depth", 8))))
+    except (TypeError, ValueError):
+        max_depth = 8
+    parts = [json.dumps(scan, sort_keys=True)]
     for item in cfg.get("roots", []):
         if isinstance(item, str):
             item = {"path": item}
         path = str(item.get("path", ""))
-        try:
-            stat = Path(path).stat()
-            # 目录条目数一并入签名：Windows 的 mtime 只跟着系统时钟 tick
-            # （约 15 ms）走，同一 tick 内新建子目录时 mtime 可能不变，光看
-            # 时间戳会误判缓存仍然有效。
-            try:
-                with os.scandir(path) as entries:
-                    count = sum(1 for _ in entries)
-            except OSError:
-                count = -1
-            parts.append(f"{path}|{stat.st_mtime_ns}|{stat.st_size}|{count}")
-        except OSError:
-            parts.append(f"{path}|missing")
         parts.append(json.dumps(item, sort_keys=True, ensure_ascii=False))
+        parts.extend(_tree_states(Path(path), max_depth))
+    # 注册表 / 默认 VoiceDB 这些自动发现来源不在 cfg 里：配置根不变、但
+    # VoiceDB 里换了声库时，签名也必须跟着变，否则缓存永远命中旧结果。
+    for root in _voice_db_roots():
+        parts.append(f"auto|{root}")
+        parts.extend(_tree_states(root, max_depth))
     return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
 
 
