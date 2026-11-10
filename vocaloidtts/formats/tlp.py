@@ -26,7 +26,7 @@ from .base import Format, lyric_for, pit_cents
 TICKS_PER_QUARTER = 480
 
 
-def _pitch_curve(song: Song) -> list[list[float]]:
+def pitch_curve(song: Song) -> list[list[float]]:
     """把所有音符的 PIT 转成一条绝对音高曲线。"""
     points: list[tuple[float, float]] = []
     for note in song.notes:
@@ -92,7 +92,7 @@ def build_project(song: Song) -> dict:
                 "properties": {},
                 "notes": payload,
                 "automations": {},
-                "pitch": _pitch_curve(song),
+                "pitch": pitch_curve(song),
                 "vibratos": [],
             }],
         }],

@@ -9,6 +9,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from pathlib import Path
+import struct
 from typing import TYPE_CHECKING, Callable, Iterable
 
 from ..prosody import Note, Song
@@ -147,6 +148,53 @@ def zstd_store(data: bytes) -> bytes:
     if not data:
         out += (1).to_bytes(3, "little")  # 空内容也要有一个「最后一块」
     return bytes(out)
+
+
+def _cbor_head(major: int, value: int) -> bytes:
+    if value < 24:
+        return bytes([(major << 5) | value])
+    if value < 0x100:
+        return bytes([(major << 5) | 24, value])
+    if value < 0x10000:
+        return bytes([(major << 5) | 25]) + value.to_bytes(2, "big")
+    if value < 0x100000000:
+        return bytes([(major << 5) | 26]) + value.to_bytes(4, "big")
+    return bytes([(major << 5) | 27]) + value.to_bytes(8, "big")
+
+
+def cbor_dumps(value: object) -> bytes:
+    """最小 CBOR 编码器（RFC 8949），只覆盖 JSON 能表达的那几种类型。
+
+    TuneLab 的新工程格式（.tlpx）是 CBOR 而不是 JSON。为了不引 ``cbor2``
+    这个二进制依赖，这里自己编——只需要 map / array / text / int / float /
+    bool / null，一律用定长编码，不追求紧凑。
+
+    ``bool`` 必须在 ``int`` 之前判断，因为 Python 里 ``True`` 是 ``int`` 的子类。
+    """
+    if value is None:
+        return b"\xf6"
+    if value is True:
+        return b"\xf5"
+    if value is False:
+        return b"\xf4"
+    if isinstance(value, int):
+        return _cbor_head(0, value) if value >= 0 else _cbor_head(1, -1 - value)
+    if isinstance(value, float):
+        return b"\xfb" + struct.pack(">d", value)
+    if isinstance(value, str):
+        data = value.encode("utf-8")
+        return _cbor_head(3, len(data)) + data
+    if isinstance(value, (bytes, bytearray)):
+        return _cbor_head(2, len(value)) + bytes(value)
+    if isinstance(value, (list, tuple)):
+        return _cbor_head(4, len(value)) + b"".join(cbor_dumps(item) for item in value)
+    if isinstance(value, dict):
+        out = bytearray(_cbor_head(5, len(value)))
+        for key, item in value.items():
+            out += cbor_dumps(key)
+            out += cbor_dumps(item)
+        return bytes(out)
+    raise TypeError(f"CBOR 编码器不认识这个类型：{type(value).__name__}")
 
 
 def comp_id(bank: "Voicebank") -> str:
