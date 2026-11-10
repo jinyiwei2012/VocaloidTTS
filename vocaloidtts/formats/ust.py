@@ -19,6 +19,10 @@
 ``[#nnnn]`` 是每个音符的小节名，``Length`` 用 480 tick / 四分音符（和我们的
 内部 tick 一致，不需要换算），``NoteNum`` 是 MIDI 音符号。
 
+UST 是**顺序**格式：它只写每个音符的 ``Length``，不写 ``start``。所以音符之间
+的停顿必须显式写成 ``Lyric=R`` 的休止音符，否则整首歌会被压缩成连唱——标点带来
+的那一拍停顿会凭空消失，后面的音全部提前。
+
 格式细节参考 LibreSVIP 的 ``libresvip/plugins/ust``（MIT，见
 THIRD_PARTY_NOTICES.md）。这里只保留**写**方向，并且**只写音符层**：
 
@@ -44,6 +48,33 @@ TICKS_PER_QUARTER = 480
 #: 写进 [#VERSION] 的版本号。
 UST_VERSION = "1.0"
 
+#: 休止音符的歌词。UTAU 用 ``R`` 表示不发声的一拍。
+REST_LYRIC = "R"
+
+#: 休止音符的音高。UST 里必须给一个 NoteNum，惯例用中央 C。
+REST_MIDI = 60
+
+
+def _entries(notes) -> list[tuple[int, str, int]]:
+    """把音符序列展开成 UST 的连续条目，空隙用休止音符补上。
+
+    UST 没有 ``start`` 字段，时间轴由各条目的 ``Length`` 首尾相接累加而成，
+    所以这里必须自己把停顿补成 ``R``。返回 ``(length, lyric, midi)``。
+    """
+    out: list[tuple[int, str, int]] = []
+    cursor = 0
+    for note in notes:
+        start = max(0, int(note.start))
+        if start > cursor:
+            out.append((start - cursor, REST_LYRIC, REST_MIDI))
+            cursor = start
+        length = max(1, int(note.dur))
+        out.append((length,
+                    note.lyric or lyric_for(note),
+                    max(0, min(127, int(note.midi)))))
+        cursor = max(cursor, start + length)
+    return out
+
 
 def build_text(song: Song, title: str = "VocaloidTTS") -> str:
     notes = [note for note in song.notes if note.dur > 0]
@@ -59,12 +90,12 @@ def build_text(song: Song, title: str = "VocaloidTTS") -> str:
         "Tracks=1",
         f"Project={title or 'VocaloidTTS'}",
     ]
-    for index, note in enumerate(notes):
+    for index, (length, lyric, midi) in enumerate(_entries(notes)):
         lines.extend([
             f"[#{index:04d}]",
-            f"Length={max(1, int(note.dur))}",
-            f"Lyric={note.lyric or lyric_for(note)}",
-            f"NoteNum={max(0, min(127, int(note.midi)))}",
+            f"Length={length}",
+            f"Lyric={lyric}",
+            f"NoteNum={midi}",
         ])
     lines.append("[#TRACKEND]")
     return "\n".join(lines) + "\n"
