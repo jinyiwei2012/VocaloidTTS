@@ -36,6 +36,7 @@ MIT 项目，按 MIT 要求保留原版权与许可声明。
 | `formats/tsmsln.py` | `plugins/tsmsln/` | `MobileSongEditor` 根节点、版本号、轨道层级差异 |
 | `formats/dv.py` | `plugins/dv/` | `SHARPKEY` 头、两种数组写法、`115 - MIDI` 音高轴、UTF-16 无关的 u32 长度字符串 |
 | `formats/ust.py` | `plugins/ust/` | `[#VERSION]` / `[#SETTING]` / `[#nnnn]` 段落与字段名 |
+| `formats/ccs.py` | `plugins/ccs/` | `Scenario` 树结构、属性式音符、`SingerSong` 类别、clock 双倍 |
 | `formats/lrc.py` / `srt.py` / `ass.py` | `plugins/lrc` / `srt` / `ass` | 按停顿切歌词行的时间轴约定 |
 | `formats/__init__.py` | `plugins/` 的组织方式 | 「每个格式一个模块 + 元数据自带」的注册表思路 |
 
