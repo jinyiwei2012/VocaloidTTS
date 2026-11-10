@@ -78,7 +78,10 @@ jobs:
 
   publish:
     needs: build
-    if: github.ref == 'refs/heads/release'
+    # 只有「push 到 release 分支」才发布。workflow_dispatch 在 release 分支上
+    # github.ref 同样是 refs/heads/release，光判 ref 会让手动触发的验证跑也
+    # 创建/覆盖 Release，和工作流开头写的约定相反。
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
