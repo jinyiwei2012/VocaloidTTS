@@ -79,6 +79,21 @@ class TimelineExportTests(unittest.TestCase):
         self.assertRegex(
             text, r"Dialogue: 0,\d:\d{2}:\d{2}\.\d{2},\d:\d{2}:\d{2}\.\d{2},Default,")
 
+    def test_lrc_rolls_centiseconds_into_the_next_minute(self) -> None:
+        """59.998958 秒必须写成 01:00.00，不能是 00:60.00。"""
+        song = compose("你好", VoiceOptions(seed=1), bpm=120)
+        self.assertEqual(lrc._stamp(song, 57599), "01:00.00")
+        self.assertEqual(lrc._stamp(song, 57600), "01:00.00")
+        self.assertEqual(lrc._stamp(song, 57595), "00:59.99")
+        self.assertEqual(lrc._stamp(song, 0), "00:00.00")
+        self.assertNotIn(":60.", lrc._stamp(song, 57599))
+
+    def test_lrc_stamps_never_show_a_60_second_field(self) -> None:
+        song = _song()
+        for group in lyric_lines(song):
+            stamp = lrc._stamp(song, group[0].start)
+            self.assertRegex(stamp, r"^\d{2}:[0-5]\d\.\d{2}$")
+
     def test_all_three_are_registered(self) -> None:
         for key, extension in (("lrc", ".lrc"), ("srt", ".srt"), ("ass", ".ass")):
             with self.subTest(key=key):

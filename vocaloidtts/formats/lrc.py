@@ -17,10 +17,16 @@ from .base import Format, lyric_lines, lyric_text, seconds
 
 
 def _stamp(song: Song, tick: float) -> str:
-    total = max(0.0, seconds(song, tick))
-    minutes = int(total // 60)
-    rest = total - minutes * 60
-    return f"{minutes:02d}:{rest:05.2f}"
+    """``[mm:ss.xx]``。
+
+    先把时间**取整到百分之一秒**，再拆分钟和秒。反过来的写法（先取整分钟、
+    再单独格式化余秒）会把 59.998958 秒写成 ``00:60.00``——一个不存在的秒数。
+    ``.srt`` / ``.ass`` 一开始就是先取整再 divmod，这里对齐它们。
+    """
+    centis = int(round(max(0.0, seconds(song, tick)) * 100))
+    minutes, centis = divmod(centis, 6000)
+    whole, centis = divmod(centis, 100)
+    return f"{minutes:02d}:{whole:02d}.{centis:02d}"
 
 
 def write_lrc(song: Song, path: str, title: str = "VocaloidTTS") -> Path:
